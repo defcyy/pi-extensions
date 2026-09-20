@@ -3,13 +3,18 @@ import test from "node:test";
 import type { HerdrAgent, HerdrLayout } from "../pi-extension/herdr-subagents/herdr.ts";
 import {
   canCloseOwnedPane,
+  canDispatchJob,
   chooseSplitDirection,
   chooseSplitParent,
   completionBatchDelay,
-  findReusableAgents,
+  HERDR_HANDOVER_FILE_ENV,
+  HERDR_JOB_ID_ENV,
+  HERDR_SUBAGENT_ENV,
+  isDelegatedWorker,
   makeTaskAgentName,
-  requestedLaunchOverrides,
   resolveModelSelection,
+  workerPaneEnvironment,
+  workerToolAllowlist,
 } from "../pi-extension/herdr-subagents/policy.ts";
 
 function agent(overrides: Partial<HerdrAgent> = {}): HerdrAgent {
@@ -25,18 +30,63 @@ function agent(overrides: Partial<HerdrAgent> = {}): HerdrAgent {
   };
 }
 
+test("worker panes are marked as delegated", () => {
+  assert.deepEqual(
+    workerPaneEnvironment({
+      fenced: false,
+      fencedBinDir: "/unused",
+      handoverFile: "/tmp/handover.json",
+      jobId: "job-1",
+      path: "/usr/bin",
+    }),
+    {
+      [HERDR_SUBAGENT_ENV]: "1",
+      [HERDR_HANDOVER_FILE_ENV]: "/tmp/handover.json",
+      [HERDR_JOB_ID_ENV]: "job-1",
+    },
+  );
+});
+
+test("fenced worker panes prepend the launcher directory", () => {
+  assert.deepEqual(
+    workerPaneEnvironment({
+      fenced: true,
+      fencedBinDir: "/extension/fenced-bin",
+      handoverFile: "/tmp/handover.json",
+      jobId: "job-1",
+      path: "/usr/bin",
+    }),
+    {
+      [HERDR_SUBAGENT_ENV]: "1",
+      [HERDR_HANDOVER_FILE_ENV]: "/tmp/handover.json",
+      [HERDR_JOB_ID_ENV]: "job-1",
+      PATH: "/extension/fenced-bin:/usr/bin",
+    },
+  );
+});
+
+test("only the explicit worker marker disables delegation", () => {
+  assert.equal(isDelegatedWorker({ [HERDR_SUBAGENT_ENV]: "1" }), true);
+  assert.equal(isDelegatedWorker({}), false);
+  assert.equal(isDelegatedWorker({ [HERDR_SUBAGENT_ENV]: "0" }), false);
+});
+
+test("dispatch capacity includes active and pending jobs", () => {
+  assert.equal(canDispatchJob(3, 0), true);
+  assert.equal(canDispatchJob(3, 1), false);
+  assert.equal(canDispatchJob(4, 0), false);
+});
+
+test("an explicit worker allowlist always includes caller_ping", () => {
+  assert.equal(workerToolAllowlist(undefined), undefined);
+  assert.equal(workerToolAllowlist("read,bash"), "read,bash,caller_ping");
+  assert.equal(workerToolAllowlist("read,caller_ping"), "read,caller_ping");
+});
+
 test("completion batching waits for active siblings but flushes the final result quickly", () => {
   assert.equal(completionBatchDelay(3), 3_000);
   assert.equal(completionBatchDelay(2), 3_000);
   assert.equal(completionBatchDelay(1), 300);
-});
-
-test("explicit launch settings are detected even when empty", () => {
-  assert.deepEqual(requestedLaunchOverrides({}), []);
-  assert.deepEqual(
-    requestedLaunchOverrides({ thinking: "low", tools: "", systemPrompt: "review" }),
-    ["thinking", "tools", "systemPrompt"],
-  );
 });
 
 test("owned pane cleanup requires the same idle, unfocused recognized agent", () => {
@@ -44,29 +94,6 @@ test("owned pane cleanup requires the same idle, unfocused recognized agent", ()
   assert.equal(canCloseOwnedPane(agent({ focused: true }), "w1:p2"), false);
   assert.equal(canCloseOwnedPane(agent({ agent_status: "working" }), "w1:p2"), false);
   assert.equal(canCloseOwnedPane(agent(), "w1:other"), false);
-});
-
-test("findReusableAgents returns recognized idle agents in the same workspace and cwd", () => {
-  const agents = [
-    agent(),
-    agent({ pane_id: "w1:p3", agent_status: "working" }),
-    agent({ pane_id: "w1:p4", agent: "claude" }),
-    agent({ pane_id: "w1:p7", agent: null }),
-    agent({ pane_id: "w2:p1", workspace_id: "w2" }),
-    agent({ pane_id: "w1:p5", cwd: "/other", foreground_cwd: "/other" }),
-    agent({ pane_id: "w1:p6", agent_status: "done" }),
-  ];
-
-  assert.deepEqual(
-    findReusableAgents({
-      agents,
-      workspaceId: "w1",
-      currentPaneId: "w1:p1",
-      cwd: "/repo",
-      reservedTargets: new Set(["w1:p6"]),
-    }).map((candidate) => candidate.pane_id),
-    ["w1:p2", "w1:p4"],
-  );
 });
 
 test("chooseSplitParent keeps later splits in the live subagent region", () => {

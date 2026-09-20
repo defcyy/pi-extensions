@@ -210,12 +210,6 @@ function validatePane(value: unknown): HerdrPane {
   return pane as HerdrPane;
 }
 
-export async function listAgents(options?: CommandOptions): Promise<HerdrAgent[]> {
-  const response = await runJson<{ result: { agents: HerdrAgent[] } }>(["agent", "list"], options);
-  if (!Array.isArray(response.result.agents)) throw new Error("Herdr returned an invalid agent list.");
-  return response.result.agents.map(validateAgent);
-}
-
 export async function getAgent(target: string, options?: CommandOptions): Promise<HerdrAgent> {
   const response = await runJson<{ result: { agent: HerdrAgent } }>(
     ["agent", "get", target],

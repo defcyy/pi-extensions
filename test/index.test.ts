@@ -18,7 +18,7 @@ async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<voi
 function makeHarness(sessionId: string) {
   const events = new Map<string, (...args: any[]) => any>();
   const tools = new Map<string, any>();
-  const entries: unknown[] = [];
+  const entries: any[] = [];
   const messages: unknown[] = [];
   const pi: any = {
     on(name: string, handler: (...args: any[]) => any) {
@@ -42,9 +42,7 @@ function makeHarness(sessionId: string) {
     cwd: process.cwd(),
     hasUI: false,
     model: { provider: "test", id: "model" },
-    modelRegistry: {
-      getAvailable: () => [{ provider: "test", id: "model" }],
-    },
+    modelRegistry: { getAvailable: () => [{ provider: "test", id: "model" }] },
     scopedModels: [],
     thinkingLevel: "low",
     sessionManager: { getSessionId: () => sessionId },
@@ -54,52 +52,85 @@ function makeHarness(sessionId: string) {
   return { ctx, entries, events, messages, tools };
 }
 
-test("guards pending-dispatch, close-control, and agent-identity races", async () => {
+interface FakeHerdr {
+  closed: string;
+  splitStarted: string;
+  cleanup(): void;
+}
+
+function useFakeHerdr(scenario: string): FakeHerdr {
   const dir = mkdtempSync(join(tmpdir(), "fake-herdr-index-"));
   const executable = join(dir, "herdr");
-  const log = join(dir, "commands.log");
-  const marker = join(dir, "pane-closed");
+  const closed = join(dir, "pane-closed");
+  const splitStarted = join(dir, "split-started");
+  const handoverState = join(dir, "handover-state.json");
   writeFileSync(
     executable,
     `#!/usr/bin/env node
 const fs = require("node:fs");
 const args = process.argv.slice(2);
 const command = args.slice(0, 2).join(" ");
-fs.appendFileSync(process.env.FAKE_HERDR_LOG, args.join(" ") + "\\n");
-const agent = (name, status = "idle", paneId, session = "session-a") => ({
+const agent = (name, status = "idle", paneId = "w-test:child", session = "session-a") => ({
   agent: "pi", name, agent_status: status,
   agent_session: {agent:"pi", kind:"path", value:session},
-  pane_id: paneId || (process.env.FAKE_SCENARIO === "wrong-recovery" ? "w-test:other" : "w-test:child"),
-  tab_id: "w-test:t1", workspace_id: "w-test", focused: false
+  pane_id: paneId, tab_id: "w-test:t1", workspace_id: "w-test", focused: false
 });
 if (command === "pane layout") {
   console.log(JSON.stringify({result:{layout:{area:{width:160,height:60},panes:[{pane_id:"w-test:main",rect:{width:160,height:60,x:0,y:0}}]}}}));
 } else if (command === "pane split") {
+  fs.writeFileSync(process.env.FAKE_SPLIT_STARTED, "started");
+  const handoverFile = args.find((arg) => arg.startsWith("PI_HERDR_HANDOVER_FILE="))?.slice("PI_HERDR_HANDOVER_FILE=".length);
+  const jobId = args.find((arg) => arg.startsWith("PI_HERDR_JOB_ID="))?.slice("PI_HERDR_JOB_ID=".length);
+  if (handoverFile && jobId) fs.writeFileSync(process.env.FAKE_HANDOVER_STATE, JSON.stringify({ handoverFile, jobId }));
   setTimeout(() => console.log(JSON.stringify({result:{pane:{pane_id:"w-test:child",tab_id:"w-test:t1",workspace_id:"w-test"}}})), process.env.FAKE_SCENARIO === "pending" ? 150 : 0);
 } else if (command === "pane close") {
-  fs.writeFileSync(process.env.FAKE_HERDR_MARKER, "closed");
+  fs.writeFileSync(process.env.FAKE_PANE_CLOSED, "closed");
   setTimeout(() => process.exit(0), process.env.FAKE_SCENARIO === "close-race" ? 200 : 0);
 } else if (command === "agent start") {
-  const name = args[2];
   if (process.env.FAKE_SCENARIO === "wait-mismatch") {
     console.error(JSON.stringify({error:{message:"simulated start failure"}}));
     process.exit(1);
-  } else {
-    console.log(JSON.stringify({result:{agent:agent(name)}}));
   }
+  const pane = process.env.FAKE_SCENARIO === "wrong-recovery" ? "w-test:other" : "w-test:child";
+  console.log(JSON.stringify({result:{agent:agent(args[2], "idle", pane)}}));
 } else if (command === "agent get") {
-  const status = process.env.FAKE_SCENARIO === "wait-mismatch" ? "working" : "idle";
-  console.log(JSON.stringify({result:{agent:agent(args[2], status)}}));
+  const pane = process.env.FAKE_SCENARIO === "wrong-recovery" ? "w-test:other" : "w-test:child";
+  const status = ["wait-mismatch", "delayed-handover"].includes(process.env.FAKE_SCENARIO) ? "working" : "idle";
+  console.log(JSON.stringify({result:{agent:agent(args[2], status, pane)}}));
 } else if (command === "agent wait") {
-  console.log(JSON.stringify({result:{agent:agent("foreign-agent", "idle", "w-test:other")}}));
+  if (process.env.FAKE_SCENARIO === "delayed-handover") {
+    const state = JSON.parse(fs.readFileSync(process.env.FAKE_HANDOVER_STATE, "utf8"));
+    fs.writeFileSync(state.handoverFile, JSON.stringify({
+      type: "caller_ping", jobId: state.jobId,
+      task: "Audit the delayed migration", reason: "It can run independently"
+    }));
+    console.log(JSON.stringify({result:{agent:agent(args[2], "done")}}));
+  } else {
+    console.log(JSON.stringify({result:{agent:agent("foreign-agent", "idle", "w-test:other")}}));
+  }
+} else if (command === "agent read") {
+  console.log("Worker result");
 } else if (command === "agent prompt") {
-  if (process.env.FAKE_SCENARIO === "prompt-mismatch") {
+  if (process.env.FAKE_SCENARIO === "delayed-handover") {
+    console.error(JSON.stringify({error:{message:"timed out"}}));
+    process.exit(1);
+  } else if (process.env.FAKE_SCENARIO === "handover") {
+    const state = JSON.parse(fs.readFileSync(process.env.FAKE_HANDOVER_STATE, "utf8"));
+    fs.writeFileSync(state.handoverFile, JSON.stringify({
+      type: "caller_ping", jobId: state.jobId,
+      task: "Review the migration ordering", reason: "It is independent parallel work", context: "Inspect db/migrations"
+    }));
+    console.error(JSON.stringify({error:{message:"worker exited after handover"}}));
+    process.exit(1);
+  } else if (process.env.FAKE_SCENARIO === "prompt-mismatch") {
     console.log(JSON.stringify({result:{agent:agent("foreign-agent", "idle", "w-test:other")}}));
   } else if (process.env.FAKE_SCENARIO === "prompt-session-mismatch") {
     console.log(JSON.stringify({result:{agent:agent(args[2], "idle", "w-test:child", "session-b")}}));
+  } else if (process.env.FAKE_SCENARIO === "success") {
+    console.log(JSON.stringify({result:{agent:agent(args[2])}}));
   } else {
     const timer = setInterval(() => {
-      if (!fs.existsSync(process.env.FAKE_HERDR_MARKER)) return;
+      if (!fs.existsSync(process.env.FAKE_PANE_CLOSED)) return;
       clearInterval(timer);
       console.error(JSON.stringify({error:{message:"pane closed while waiting"}}));
       process.exit(1);
@@ -114,157 +145,274 @@ if (command === "pane layout") {
   );
   chmodSync(executable, 0o755);
 
-  const old = {
+  const previous = {
     path: process.env.PATH,
     herdrEnv: process.env.HERDR_ENV,
     pane: process.env.HERDR_PANE_ID,
     workspace: process.env.HERDR_WORKSPACE_ID,
     fenceSandbox: process.env.FENCE_SANDBOX,
   };
-  process.env.PATH = `${dir}:${old.path ?? ""}`;
+  process.env.PATH = `${dir}:${previous.path ?? ""}`;
   process.env.HERDR_ENV = "1";
   process.env.HERDR_PANE_ID = "w-test:main";
   process.env.HERDR_WORKSPACE_ID = "w-test";
   process.env.FENCE_SANDBOX = "1";
-  process.env.FAKE_HERDR_LOG = log;
-  process.env.FAKE_HERDR_MARKER = marker;
+  process.env.FAKE_SCENARIO = scenario;
+  process.env.FAKE_PANE_CLOSED = closed;
+  process.env.FAKE_SPLIT_STARTED = splitStarted;
+  process.env.FAKE_HANDOVER_STATE = handoverState;
 
+  return {
+    closed,
+    splitStarted,
+    cleanup() {
+      if (previous.path === undefined) delete process.env.PATH;
+      else process.env.PATH = previous.path;
+      if (previous.herdrEnv === undefined) delete process.env.HERDR_ENV;
+      else process.env.HERDR_ENV = previous.herdrEnv;
+      if (previous.pane === undefined) delete process.env.HERDR_PANE_ID;
+      else process.env.HERDR_PANE_ID = previous.pane;
+      if (previous.workspace === undefined) delete process.env.HERDR_WORKSPACE_ID;
+      else process.env.HERDR_WORKSPACE_ID = previous.workspace;
+      if (previous.fenceSandbox === undefined) delete process.env.FENCE_SANDBOX;
+      else process.env.FENCE_SANDBOX = previous.fenceSandbox;
+      delete process.env.FAKE_SCENARIO;
+      delete process.env.FAKE_PANE_CLOSED;
+      delete process.env.FAKE_SPLIT_STARTED;
+      delete process.env.FAKE_HANDOVER_STATE;
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+}
+
+function shutdown(harness: ReturnType<typeof makeHarness>): void {
+  harness.events.get("session_shutdown")?.();
+}
+
+function dispatch(
+  harness: ReturnType<typeof makeHarness>,
+  task: string,
+  parallelReason = "The parent continues independent work",
+) {
+  return harness.tools.get("herdr_subagent").execute(
+    "dispatch",
+    { task, parallelReason },
+    undefined,
+    undefined,
+    harness.ctx,
+  );
+}
+
+test("delegated workers expose only caller_ping and produce a parent handover", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "herdr-handover-"));
+  const handoverFile = join(dir, "handover.json");
+  const previous = {
+    marker: process.env.PI_HERDR_SUBAGENT,
+    file: process.env.PI_HERDR_HANDOVER_FILE,
+    jobId: process.env.PI_HERDR_JOB_ID,
+  };
+  process.env.PI_HERDR_SUBAGENT = "1";
+  process.env.PI_HERDR_HANDOVER_FILE = handoverFile;
+  process.env.PI_HERDR_JOB_ID = "job-1";
+  const tools = new Map<string, any>();
+  const events = new Map<string, (...args: any[]) => any>();
+  const commands: string[] = [];
   try {
-    process.env.FAKE_SCENARIO = "pending";
-    const pendingHarness = makeHarness("session-old");
-    const dispatch = pendingHarness.tools.get("herdr_subagent");
+    herdrSubagents({
+      on(name: string, handler: (...args: any[]) => any) { events.set(name, handler); },
+      registerTool(tool: any) { tools.set(tool.name, tool); },
+      registerCommand(name: string) { commands.push(name); },
+      registerMessageRenderer() {},
+    } as any);
+    assert.deepEqual([...tools.keys()], ["caller_ping"]);
+    assert.deepEqual(commands, []);
+    assert.match(
+      events.get("before_agent_start")?.({ systemPrompt: "base" }).systemPrompt,
+      /one-shot worker, not the parent orchestrator/,
+    );
+
+    let shutDown = false;
     await assert.rejects(
-      dispatch.execute("blank", { task: "   " }, undefined, undefined, pendingHarness.ctx),
-      /task cannot be empty or whitespace/,
+      tools.get("caller_ping").execute(
+        "blank-ping",
+        { task: "   ", reason: "parallel" },
+        undefined,
+        undefined,
+        { shutdown() { shutDown = true; } },
+      ),
+      /cannot be blank/,
     );
-    const dispatchPromise = dispatch.execute(
-      "call-1",
-      { task: "review pending shutdown", reuse: "never", retention: "interactive" },
-      undefined,
-      undefined,
-      pendingHarness.ctx,
-    );
-    await waitFor(() => existsSync(log) && readFileSync(log, "utf8").includes("pane split"));
-    pendingHarness.events.get("session_shutdown")?.();
-    await assert.rejects(dispatchPromise, /parent Pi session ended/);
-    const pendingLog = readFileSync(log, "utf8");
-    assert.match(pendingLog, /pane close/);
-    assert.match(pendingLog, /--env PATH=.*fenced-bin/);
-    assert.doesNotMatch(pendingLog, /agent start/);
-    assert.equal(__test__.runningJobs.size, 0);
-    assert.equal(__test__.reservedPanes.size, 0);
+    assert.equal(shutDown, false);
+    assert.equal(existsSync(handoverFile), false);
 
-    writeFileSync(log, "");
-    rmSync(marker, { force: true });
-    process.env.FAKE_SCENARIO = "close-race";
-    const closeHarness = makeHarness("session-close");
-    const closeDispatch = closeHarness.tools.get("herdr_subagent");
-    const queued = await closeDispatch.execute(
-      "call-2",
-      { task: "remain active until closed", reuse: "never", retention: "interactive" },
+    await tools.get("caller_ping").execute(
+      "ping-1",
+      { task: "Review the database migration", reason: "It can run independently", context: "See db/" },
       undefined,
       undefined,
-      closeHarness.ctx,
+      { shutdown() { shutDown = true; } },
     );
-    const jobId = queued.details.id as string;
-    await waitFor(() => readFileSync(log, "utf8").includes("agent prompt"));
-
-    const control = closeHarness.tools.get("herdr_subagent_control");
-    await control.execute("control-1", { jobId, action: "close" }, undefined);
-    await waitFor(() => !__test__.runningJobs.has(jobId));
-    assert.equal(closeHarness.entries.length, 0);
-    assert.equal(closeHarness.messages.length, 0);
-    closeHarness.events.get("session_shutdown")?.();
-
-    writeFileSync(log, "");
-    rmSync(marker, { force: true });
-    process.env.FAKE_SCENARIO = "wrong-recovery";
-    const identityHarness = makeHarness("session-identity");
-    const identityDispatch = identityHarness.tools.get("herdr_subagent");
-    const identityQueued = await identityDispatch.execute(
-      "call-3",
-      { task: "do not prompt a mismatched recovered agent", reuse: "never" },
-      undefined,
-      undefined,
-      identityHarness.ctx,
-    );
-    await waitFor(() => !__test__.runningJobs.has(identityQueued.details.id));
-    assert.doesNotMatch(readFileSync(log, "utf8"), /agent prompt|pane close/);
-    identityHarness.events.get("session_shutdown")?.();
-
-    writeFileSync(log, "");
-    rmSync(marker, { force: true });
-    process.env.FAKE_SCENARIO = "wait-mismatch";
-    const waitHarness = makeHarness("session-wait-identity");
-    const waitDispatch = waitHarness.tools.get("herdr_subagent");
-    const waitQueued = await waitDispatch.execute(
-      "call-4",
-      { task: "do not prompt an agent returned from the wrong pane", reuse: "never" },
-      undefined,
-      undefined,
-      waitHarness.ctx,
-    );
-    await waitFor(() => !__test__.runningJobs.has(waitQueued.details.id));
-    const waitLog = readFileSync(log, "utf8");
-    assert.match(waitLog, /agent wait/);
-    assert.doesNotMatch(waitLog, /agent prompt|pane close/);
-    assert.equal((waitHarness.entries.at(-1) as any).details.status, "failed");
-    assert.match((waitHarness.entries.at(-1) as any).details.error, /expected w-test:child/);
-    waitHarness.events.get("session_shutdown")?.();
-
-    writeFileSync(log, "");
-    rmSync(marker, { force: true });
-    process.env.FAKE_SCENARIO = "prompt-mismatch";
-    const promptHarness = makeHarness("session-prompt-identity");
-    const promptDispatch = promptHarness.tools.get("herdr_subagent");
-    const promptQueued = await promptDispatch.execute(
-      "call-5",
-      { task: "reject a prompt completion from the wrong pane", reuse: "never" },
-      undefined,
-      undefined,
-      promptHarness.ctx,
-    );
-    await waitFor(() => !__test__.runningJobs.has(promptQueued.details.id));
-    const promptLog = readFileSync(log, "utf8");
-    assert.match(promptLog, /agent prompt/);
-    assert.doesNotMatch(promptLog, /pane close/);
-    assert.equal((promptHarness.entries.at(-1) as any).details.status, "failed");
-    assert.match((promptHarness.entries.at(-1) as any).details.error, /expected w-test:child/);
-    promptHarness.events.get("session_shutdown")?.();
-
-    writeFileSync(log, "");
-    rmSync(marker, { force: true });
-    process.env.FAKE_SCENARIO = "prompt-session-mismatch";
-    const sessionHarness = makeHarness("session-prompt-session-identity");
-    const sessionDispatch = sessionHarness.tools.get("herdr_subagent");
-    const sessionQueued = await sessionDispatch.execute(
-      "call-6",
-      { task: "reject a prompt completion from another Pi session", reuse: "never" },
-      undefined,
-      undefined,
-      sessionHarness.ctx,
-    );
-    await waitFor(() => !__test__.runningJobs.has(sessionQueued.details.id));
-    const sessionLog = readFileSync(log, "utf8");
-    assert.match(sessionLog, /agent prompt/);
-    assert.doesNotMatch(sessionLog, /pane close/);
-    assert.equal((sessionHarness.entries.at(-1) as any).details.status, "failed");
-    assert.match((sessionHarness.entries.at(-1) as any).details.error, /different Pi session/);
-    sessionHarness.events.get("session_shutdown")?.();
+    assert.equal(shutDown, true);
+    assert.deepEqual(JSON.parse(readFileSync(handoverFile, "utf8")), {
+      type: "caller_ping",
+      jobId: "job-1",
+      task: "Review the database migration",
+      reason: "It can run independently",
+      context: "See db/",
+    });
   } finally {
-    if (old.path === undefined) delete process.env.PATH;
-    else process.env.PATH = old.path;
-    if (old.herdrEnv === undefined) delete process.env.HERDR_ENV;
-    else process.env.HERDR_ENV = old.herdrEnv;
-    if (old.pane === undefined) delete process.env.HERDR_PANE_ID;
-    else process.env.HERDR_PANE_ID = old.pane;
-    if (old.workspace === undefined) delete process.env.HERDR_WORKSPACE_ID;
-    else process.env.HERDR_WORKSPACE_ID = old.workspace;
-    if (old.fenceSandbox === undefined) delete process.env.FENCE_SANDBOX;
-    else process.env.FENCE_SANDBOX = old.fenceSandbox;
-    delete process.env.FAKE_HERDR_LOG;
-    delete process.env.FAKE_HERDR_MARKER;
-    delete process.env.FAKE_SCENARIO;
+    if (previous.marker === undefined) delete process.env.PI_HERDR_SUBAGENT;
+    else process.env.PI_HERDR_SUBAGENT = previous.marker;
+    if (previous.file === undefined) delete process.env.PI_HERDR_HANDOVER_FILE;
+    else process.env.PI_HERDR_HANDOVER_FILE = previous.file;
+    if (previous.jobId === undefined) delete process.env.PI_HERDR_JOB_ID;
+    else process.env.PI_HERDR_JOB_ID = previous.jobId;
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("shutdown during pane creation closes the unused pane", async () => {
+  const fake = useFakeHerdr("pending");
+  const harness = makeHarness("session-pending");
+  try {
+    const dispatchTool = harness.tools.get("herdr_subagent");
+    await assert.rejects(
+      dispatchTool.execute(
+        "invalid",
+        { task: "review shutdown", parallelReason: "   " },
+        undefined,
+        undefined,
+        harness.ctx,
+      ),
+      /parallelReason cannot be empty or whitespace/,
+    );
+    const result = dispatch(harness, "review shutdown", "The parent continues shutdown handling");
+    await waitFor(() => existsSync(fake.splitStarted));
+    shutdown(harness);
+
+    await assert.rejects(result, /parent Pi session ended/);
+    assert.equal(existsSync(fake.closed), true);
+    assert.equal(__test__.runningJobs.size, 0);
+  } finally {
+    fake.cleanup();
+  }
+});
+
+test("closing an owned active job stops it without delivering a failure", async () => {
+  const fake = useFakeHerdr("close-race");
+  const harness = makeHarness("session-close");
+  try {
+    const queued = await dispatch(harness, "remain active");
+    const jobId = queued.details.id as string;
+    await waitFor(() => __test__.runningJobs.get(jobId)?.state === "working");
+
+    await harness.tools.get("herdr_subagent_control").execute(
+      "control-1",
+      { jobId, action: "close" },
+      undefined,
+    );
+    await waitFor(() => !__test__.runningJobs.has(jobId));
+
+    assert.equal(existsSync(fake.closed), true);
+    assert.deepEqual(harness.entries, []);
+    assert.deepEqual(harness.messages, []);
+  } finally {
+    shutdown(harness);
+    fake.cleanup();
+  }
+});
+
+test("a successful one-shot worker returns its result and closes its pane", async () => {
+  const fake = useFakeHerdr("success");
+  const harness = makeHarness("session-success");
+  try {
+    const queued = await dispatch(
+      harness,
+      "Review the API",
+      "The parent updates independent documentation",
+    );
+    await waitFor(() => !__test__.runningJobs.has(queued.details.id));
+
+    const completion = harness.entries.at(-1);
+    assert.equal(completion.details.status, "completed");
+    assert.match(completion.content, /Worker result/);
+    assert.equal(existsSync(fake.closed), true);
+  } finally {
+    shutdown(harness);
+    fake.cleanup();
+  }
+});
+
+test("caller_ping returns a proposal to the main agent without spawning a child", async () => {
+  const fake = useFakeHerdr("handover");
+  const harness = makeHarness("session-handover");
+  try {
+    const queued = await dispatch(
+      harness,
+      "Implement the API",
+      "The parent updates independent documentation",
+    );
+    await waitFor(() => !__test__.runningJobs.has(queued.details.id));
+
+    const completion = harness.entries.at(-1);
+    assert.equal(completion.details.status, "handover");
+    assert.match(completion.content, /Proposed task: Review the migration ordering/);
+    assert.match(completion.content, /has not started another subagent/);
+    assert.equal(existsSync(fake.closed), true);
+  } finally {
+    shutdown(harness);
+    fake.cleanup();
+  }
+});
+
+test("caller_ping is still delivered after the initial prompt wait times out", async () => {
+  const fake = useFakeHerdr("delayed-handover");
+  const harness = makeHarness("session-delayed-handover");
+  try {
+    const queued = await dispatch(
+      harness,
+      "Implement the API",
+      "The parent updates independent documentation",
+    );
+    await waitFor(() => !__test__.runningJobs.has(queued.details.id));
+
+    assert.deepEqual(
+      harness.entries.map((entry) => entry.details.status),
+      ["timed-out", "handover"],
+    );
+    assert.equal(existsSync(fake.closed), true);
+  } finally {
+    shutdown(harness);
+    fake.cleanup();
+  }
+});
+
+const identityFailures = [
+  { scenario: "wrong-recovery", error: /expected pane_id "w-test:child"/ },
+  { scenario: "wait-mismatch", error: /expected w-test:child/ },
+  { scenario: "prompt-mismatch", error: /expected w-test:child/ },
+  { scenario: "prompt-session-mismatch", error: /different Pi session/ },
+];
+
+for (const { scenario, error } of identityFailures) {
+  test(`identity failure ${scenario} fails safely and retains the pane`, async () => {
+    const fake = useFakeHerdr(scenario);
+    const harness = makeHarness(`session-${scenario}`);
+    try {
+      const queued = await dispatch(
+        harness,
+        "verify child identity",
+        "The parent verifies another component",
+      );
+      await waitFor(() => !__test__.runningJobs.has(queued.details.id));
+
+      const completion = harness.entries.at(-1);
+      assert.equal(completion.details.status, "failed");
+      assert.match(completion.details.error, error);
+      assert.equal(existsSync(fake.closed), false);
+    } finally {
+      shutdown(harness);
+      fake.cleanup();
+    }
+  });
+}

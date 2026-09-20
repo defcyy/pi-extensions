@@ -2,169 +2,183 @@
 
 ## Purpose
 
-`pi-herdr-subagents` adds asynchronous delegation to a Pi session running in Herdr.
+`pi-herdr-subagents` provides bounded asynchronous parallelism for a Pi session running in Herdr.
 
-Herdr owns panes, process startup, agent detection, prompting, and normalized agent state. The extension owns target selection, job supervision, result extraction, cleanup policy, and Pi UI updates.
+The main session may launch fresh one-shot Pi workers. Herdr owns panes, process startup, prompting, and normalized agent state. The extension owns job admission, worker isolation, supervision, handover delivery, cleanup, and UI updates.
 
-It does not provide a generic multiplexer layer, distributed job queue, worktree management, or automatic code merging.
+It intentionally does not provide reusable agents, session continuation, arbitrary target panes, recursive orchestration, worktrees, or automatic merging.
 
 ## Modules
 
 | Module | Responsibility |
 |---|---|
-| `index.ts` | Tools, jobs, supervision, controls, shutdown, completion delivery, and UI |
+| `index.ts` | Main and worker tool surfaces, jobs, supervision, handovers, controls, completion delivery, and UI |
 | `herdr.ts` | Bounded Herdr CLI calls and response validation |
-| `policy.ts` | Reuse rules, split placement, generated names, and model selection |
+| `policy.ts` | Worker environment, concurrency, tool scope, split placement, generated names, and model selection |
 | `session.ts` | Incremental Pi session reading and UTF-8-safe result truncation |
-| `fenced-bin/pi` | Fence-aware launcher for fresh children of a fenced parent |
+| `fenced-bin/pi` | Fence-aware launcher for workers of a fenced parent |
 
-The job supervisor remains in `index.ts` because it depends directly on Pi lifecycle callbacks. Stateless policy and I/O helpers live in separate modules.
+## Process roles
+
+Role is fixed when a Pi process starts.
+
+### Main process
+
+An unmarked process registers:
+
+- `herdr_subagent`;
+- `herdr_subagent_control`;
+- lifecycle handlers and the result renderer.
+
+It enforces one shared limit of four active or pending jobs. Pending pane creation counts toward the limit so simultaneous calls cannot over-provision workers.
+
+### Worker process
+
+Every worker pane receives:
+
+```text
+PI_HERDR_SUBAGENT=1
+PI_HERDR_JOB_ID=<job id>
+PI_HERDR_HANDOVER_FILE=<unguessable temporary path>
+```
+
+A marked process registers only `caller_ping` plus a worker-boundary system-prompt hook. It does not register spawning, management, listing, command, or renderer surfaces. The marker is inherited by subprocesses, so a nested Pi process also cannot gain main-agent authority.
+
+When the caller supplies an explicit Pi tool allowlist, the launcher adds `caller_ping` to it.
+
+## Parallel-work admission
+
+Every dispatch requires:
+
+- a self-contained `task`;
+- a nonblank `parallelReason` describing useful independent work the main agent will do concurrently.
+
+Tool guidance explicitly rejects delegation for sequential steps, trivial work, and tasks needing frequent coordination. Semantic necessity ultimately remains a model decision, but the required rationale makes that decision explicit and reviewable.
 
 ## Dispatch
 
-A dispatch follows this decision path:
+A dispatch always follows one path:
 
-1. If `target` is supplied, validate and reserve that agent.
-2. Otherwise apply `reuse`:
-   - `never` creates a fresh Pi agent;
-   - `auto` reuses one safe match or creates a fresh agent;
-   - `require` reuses one safe match or fails.
-3. Register the job before starting background supervision.
-4. Return the job ID and pane immediately.
+1. Validate Herdr and parallel-work inputs.
+2. Reserve capacity before asynchronous provisioning.
+3. Generate a job ID and private handover path.
+4. Select a split location in the worker area.
+5. Create a fresh marked pane.
+6. Register the job before background execution.
+7. Start a fresh Pi process with inherited or explicit model settings.
+8. Send exactly one task.
 
-A reusable agent must be:
-
-- recognized by Herdr;
-- idle or done;
-- in the same workspace and working directory;
-- the only eligible match;
-- not already reserved by another job.
-
-Fresh creation is the default because matching workspace and directory does not prove ownership or user intent.
+There is no reuse, target, retention, or resume branch.
 
 ## Pane placement
 
-The first fresh child splits from the parent Pi pane. Later concurrent children split from the newest live extension-owned child. This keeps new panes in a subagent area rather than repeatedly shrinking the parent.
+The first worker splits from the main Pi pane. Later concurrent workers split from the newest live extension-owned worker pane. Finished, detached, and closed jobs stop being split anchors. If layout inspection fails, creation falls back to splitting the main pane.
 
-Finished, detached, and closed jobs stop being split anchors. If layout inspection fails, the extension falls back to the parent pane.
+Short Herdr mutations are serialized. Worker model execution remains parallel.
 
-Short Herdr mutations and target selection are serialized. Child model work still runs in parallel. No more than four jobs may be active or pending.
+## Child-to-parent handover
 
-## Fence startup
+A worker that believes another independent worker is necessary calls:
 
-When the parent has `FENCE_SANDBOX=1`, the extension prepends `fenced-bin` to the fresh pane's `PATH`. Herdr still starts the normal `pi` command, but the bundled launcher runs first.
+```text
+caller_ping({ task, reason, context? })
+```
 
-The launcher:
+The tool:
 
-1. removes its own directory from `PATH`;
-2. exports `HERDR_AGENT=pi`;
-3. runs the real Pi directly if already sandboxed;
-4. otherwise runs `fence -- pi ...`.
+1. validates that it is running in a managed worker;
+2. atomically publishes a mode-0600 job-scoped JSON handover;
+3. shuts down the one-shot worker.
 
-This preserves Herdr's Pi detection while giving fresh children Fence confinement. Existing and reused agents are not modified.
+The parent supervisor validates the handover type, job identity, task, and reason. It closes the worker pane and delivers a `handover` result to the main session. No child is created automatically. The main agent evaluates the proposal and, if justified, makes a normal `herdr_subagent` call subject to the same parallel rationale and four-job limit.
+
+This preserves one orchestration authority while giving workers a structured escalation channel.
 
 ## Job lifecycle
 
-A job moves through these practical states:
-
 ```text
-queued → starting → working → completed/failed
+queued → starting → working → completed
+                         ↘ handover
                          ↘ blocked
                          ↘ timed-out → continued supervision
+                         ↘ failed
                          ↘ detached
 ```
 
-`timeoutMs` is only the initial wait threshold. A timed-out or blocked job remains reserved and supervised through bounded wait calls until it finishes or the user detaches or closes it.
+`timeoutMs` is an initial wait threshold rather than a job deadline. Blocked and timed-out workers remain supervised until they settle or are manually interrupted, detached, or closed.
 
-Controls behave as follows:
+Controls are restricted to extension-owned one-shot panes:
 
-- `focus` changes pane focus only;
+- `focus` changes focus;
 - `interrupt` sends Ctrl-C and supervision continues;
-- `detach` stops supervision without touching the pane;
-- `close` is allowed only for extension-owned panes.
+- `detach` stops supervision but leaves the pane;
+- `close` closes the pane and ends supervision.
 
-If a close attempt fails, supervision resumes.
+## Identity checks
 
-## Identity and ownership
-
-Each job stores immutable expected identity:
+Each job records:
 
 - pane ID;
-- agent name;
+- generated agent name;
 - Pi session path when available;
 - parent Pi session ID;
-- whether the pane is extension-owned.
+- private handover path.
 
-Every later Herdr response must match that identity. On a mismatch, the extension does not prompt, collect from, or automatically close the unexpected agent. The job fails and an owned pane is retained for inspection.
-
-Existing and reused panes are never closed automatically. A one-shot pane is closed only when it is still the same recognized, idle or done, unfocused agent.
+Every Herdr response must match the expected pane, name, and session. On mismatch, the extension does not prompt, collect from, or automatically close the unexpected agent. This favors containment over aggressive cleanup.
 
 ## Results and cleanup
 
-For Pi children, the extension records the session byte position before prompting and reads only newly appended assistant output. Other agent kinds may fall back to terminal capture.
+The parent records the child session byte offset before prompting and reads only assistant output appended afterward. Result text is truncated to 16 KiB without splitting UTF-8 code points.
 
-Completion order is:
+Normal success ordering is:
 
-1. collect and truncate the result;
-2. preserve the result independently of cleanup;
-3. attempt safe one-shot cleanup;
-4. persist a compact record in the parent session;
-5. deliver the visible completion message.
+1. collect output;
+2. verify the settled agent identity;
+3. safely close the unfocused owned pane;
+4. persist a compact parent-session record;
+5. deliver the visible completion.
 
-Result text is limited to 16 KiB without splitting UTF-8 code points. Cleanup failure produces a warning rather than replacing successful output with an error.
+A cleanup failure becomes a warning without discarding successful output. Handover shutdown uses the private sidecar as the authoritative result and closes the owned pane directly.
 
-Near-simultaneous results are batched. While sibling jobs remain, delivery waits up to three seconds. After the final sibling settles, the batch flushes after 300 ms. Only the final inserted message triggers a parent model turn.
+Near-simultaneous completions are batched. While siblings remain, delivery waits up to three seconds; after the final sibling settles, it flushes after 300 ms. Only the final inserted message triggers a parent model turn.
+
+## Fence startup
+
+For a fenced parent, the worker pane prepends `fenced-bin` to `PATH`. The launcher removes itself from `PATH`, sets `HERDR_AGENT=pi`, and either runs Pi directly inside an existing sandbox or enters Fence first.
 
 ## Parent shutdown
 
-Each job has an `AbortController` and belongs to the parent session that created it.
+Every job belongs to the parent session that launched it and has an `AbortController`. Parent shutdown stops local watchers, flushes pending messages without starting another turn, releases reservations as runners unwind, and prevents stale delivery to a replacement session. A pane selected before job registration is closed.
 
-On parent shutdown, the extension:
-
-- stops local watchers;
-- flushes pending messages without starting another model turn;
-- releases reservations as runners unwind;
-- closes a pane selected during an unfinished dispatch before its agent starts;
-- leaves already-running child panes intact;
-- prevents stale delivery into a replacement Pi session.
-
-Jobs are not adopted automatically after restart or reload. Their panes survive for manual inspection.
+Jobs are not adopted after restart or reload.
 
 ## Failure containment
 
-- Herdr commands use argument arrays, not shell interpolation.
-- Calls are bounded, abortable, and escalated from SIGTERM to SIGKILL when needed.
-- Detached promises always have rejection handlers.
-- UI, persistence, delivery, and cleanup errors stay inside the background runner.
-- Successful output is preserved even if delivery or cleanup fails.
-- Failed startup cleanup is best effort.
+- Herdr commands use argument arrays rather than shell interpolation.
+- Calls are bounded and abortable.
+- Detached promises have rejection handlers.
+- Handover files use random paths, atomic publication, strict job identity, and best-effort removal.
+- UI, persistence, delivery, and cleanup errors remain inside the background runner.
+- Failed identity checks retain the pane rather than acting on an unexpected process.
 
 ## Known limits
 
 ### Shared working tree
 
-Parallel agents use the requested directory directly and can conflict when editing. Use isolated worktrees or keep concurrent tasks read-only.
+Parallel workers use the requested directory directly. Concurrent writers must operate on disjoint files or use externally prepared worktrees.
 
-### User takeover
+### Parallelism is policy-assisted
 
-A focused one-shot pane is retained at completion. This is conservative but cannot detect every earlier interaction. Use `retention: "interactive"` when follow-up work is expected.
+`parallelReason` and prompt guidance make the admission decision explicit, but the extension cannot prove semantic independence automatically.
 
-### Non-Pi output
+### Failed pane retention
 
-Pi provides structured JSONL output. Terminal fallback for other agents may contain UI text or incomplete history.
+A worker pane may remain when identity is uncertain, it is still active, or cleanup fails. It cannot be reused through this extension and may be closed with the control tool while the job remains active.
 
 ### No durable adoption
 
-Active jobs are not reattached after parent replacement. This avoids sending old results into the wrong session.
+Active jobs are not reattached after parent replacement.
 
 ## Tests
 
-The test suite covers routing and reuse policy, model resolution, split placement, session extraction, UTF-8 truncation, Herdr response validation, identity mismatches, command timeout handling, shutdown races, close coordination, and Fence launcher behavior.
-
-High-value manual checks are:
-
-- several simultaneous fresh jobs;
-- blocked and timed-out supervision;
-- interrupting or closing a child while the parent remains active;
-- cleanup failure after successful output;
-- parent shutdown while a child is running.
+The suite covers worker-only tool isolation and handover records, fresh worker environment construction, caller tool allowlisting, four-job admission, split placement, model resolution, session extraction, UTF-8 truncation, identity mismatches, command timeout and abort behavior, shutdown and close races, and Fence startup.

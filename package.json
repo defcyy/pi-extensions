@@ -1,7 +1,7 @@
 {
   "name": "pi-herdr-subagents",
   "version": "0.1.0",
-  "description": "Herdr-native asynchronous subagents for pi",
+  "description": "Fresh one-shot Pi workers for parallel tasks in Herdr",
   "type": "module",
   "keywords": [
     "pi-package",
