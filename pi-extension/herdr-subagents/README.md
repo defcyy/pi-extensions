@@ -14,13 +14,13 @@ The extension lets the main Pi agent send substantial independent work to fresh 
 ## Install
 
 ```bash
-pi install git:github.com/defcyy/pi-herdr-subagents
+pi install git:github.com/defcyy/pi-extensions
 ```
 
 Then restart Pi inside Herdr. For project-local installation:
 
 ```bash
-pi install -l git:github.com/defcyy/pi-herdr-subagents
+pi install -l git:github.com/defcyy/pi-extensions
 ```
 
 For local development:
