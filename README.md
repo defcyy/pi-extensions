@@ -13,6 +13,32 @@ The extension creates or reuses Herdr agents, runs tasks in the background, and 
 
 ## Install
 
+Install globally from GitHub:
+
+```bash
+pi install git:github.com/defcyy/pi-herdr-subagents
+```
+
+Then start or restart Pi inside Herdr. To try the extension without installing it:
+
+```bash
+pi -e git:github.com/defcyy/pi-herdr-subagents
+```
+
+Install it only for the current project with `-l`:
+
+```bash
+pi install -l git:github.com/defcyy/pi-herdr-subagents
+```
+
+Update an unpinned installation with:
+
+```bash
+pi update --extensions
+```
+
+A tag or commit can be pinned by appending `@<ref>` to the source. Pinned installations stay on that ref during normal package updates.
+
 For local development:
 
 ```bash
@@ -20,11 +46,7 @@ pnpm install
 pi -e .
 ```
 
-Or install the local package:
-
-```bash
-pi install /absolute/path/to/pi-herdr-subagents
-```
+Pi packages execute code with your user permissions. Review the source before installation.
 
 ## Quick start
 
