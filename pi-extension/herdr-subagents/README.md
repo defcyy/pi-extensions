@@ -1,10 +1,15 @@
-# pi-herdr-subagents
+# pi-extensions
 
-Asynchronous one-shot Pi workers in [Herdr](https://herdr.dev).
+This package includes:
+
+- [Herdr Subagents](#herdr-subagents) — asynchronous one-shot Pi workers in [Herdr](https://herdr.dev).
+- [Web Search](../web-search/README.md) — focused DuckDuckGo, GitHub, and URL-fetching tools for development research.
+
+## Herdr Subagents
 
 The extension lets the main Pi agent send substantial independent work to fresh background workers. Workers never reuse an existing agent or session, cannot create subagents, and are closed after successful completion. Results are delivered back to the main session automatically.
 
-## Requirements
+### Requirements
 
 - Pi 0.85 or newer
 - Herdr with agent and pane commands
@@ -32,7 +37,7 @@ pi -e .
 
 Pi packages execute code with your user permissions. Review the source before installation.
 
-## Usage
+### Usage
 
 Start a worker only when useful work can happen in parallel:
 
@@ -47,7 +52,7 @@ The call returns immediately. Completion is delivered later as a steer message; 
 
 Do not delegate sequential steps, small tasks, or work requiring frequent coordination. Run those directly in the main agent.
 
-## One-shot lifecycle
+### One-shot lifecycle
 
 1. The main extension reserves one of four job slots.
 2. It creates a fresh Herdr pane marked with `PI_HERDR_SUBAGENT=1`.
@@ -59,7 +64,7 @@ There is no target selection, agent reuse, persistent worker, or session resume 
 
 Additional concurrent workers split inside the existing worker area so the main pane is not repeatedly shrunk.
 
-## Child-to-parent handover
+### Child-to-parent handover
 
 A worker exposes one extension tool:
 
@@ -75,7 +80,7 @@ caller_ping({
 
 Workers receive explicit boundary instructions to complete work directly and use `caller_ping` only when another independent parallel task is necessary—not for sequential work they can perform themselves.
 
-## Tools
+### Tools
 
 ### `herdr_subagent`
 
@@ -110,11 +115,11 @@ Call without arguments to list active and recent jobs. For an active job:
 
 Workers do not receive `herdr_subagent`, `herdr_subagent_control`, commands, or main-session renderers.
 
-## Fence inheritance
+### Fence inheritance
 
 When the parent has `FENCE_SANDBOX=1`, fresh workers start through the bundled Fence-aware `pi` launcher. It preserves Herdr lifecycle detection, prevents nested Fence startup, and fails safely when the launcher is unavailable.
 
-## Safety and limits
+### Safety and limits
 
 - Only the unmarked main Pi process can create or manage workers.
 - At most four jobs may be active or provisioning.

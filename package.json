@@ -1,13 +1,15 @@
 {
   "name": "pi-herdr-subagents",
   "version": "0.1.0",
-  "description": "Fresh one-shot Pi workers for parallel tasks in Herdr",
+  "description": "Pi extensions for Herdr subagents and focused web development research",
   "type": "module",
   "keywords": [
     "pi-package",
     "pi",
     "herdr",
-    "subagents"
+    "subagents",
+    "web-search",
+    "github"
   ],
   "license": "MIT",
   "packageManager": "pnpm@10.17.1",
@@ -31,7 +33,8 @@
   },
   "pi": {
     "extensions": [
-      "./pi-extension/herdr-subagents/index.ts"
+      "./pi-extension/herdr-subagents/index.ts",
+      "./pi-extension/web-search/index.ts"
     ]
   }
 }
