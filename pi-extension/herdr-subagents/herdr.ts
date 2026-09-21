@@ -264,6 +264,33 @@ export async function closePane(paneId: string, options?: CommandOptions): Promi
   await runHerdr(["pane", "close", paneId], options);
 }
 
+const PANE_SHELL_READY_RETRY_DELAY_MS = 50;
+const PANE_SHELL_READY_TIMEOUT_MS = 5_000;
+
+function isPaneShellStarting(error: unknown): boolean {
+  return error instanceof HerdrCommandError && /not an available shell/i.test(error.message);
+}
+
+async function waitForPaneShellRetry(signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) {
+    throw new HerdrCommandError("Herdr command aborted", [], null, "", "");
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout>;
+    const abort = () => {
+      clearTimeout(timer);
+      reject(new HerdrCommandError("Herdr command aborted", [], null, "", ""));
+    };
+    const finish = () => {
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    };
+    timer = setTimeout(finish, PANE_SHELL_READY_RETRY_DELAY_MS);
+    signal?.addEventListener("abort", abort, { once: true });
+  });
+}
+
 export async function startPiAgent(params: {
   name: string;
   paneId: string;
@@ -291,10 +318,20 @@ export async function startPiAgent(params: {
   if (params.systemPrompt) piArgs.push("--append-system-prompt", params.systemPrompt);
   if (piArgs.length > 0) args.push("--", ...piArgs);
 
-  const response = await runJson<{ result: { agent: HerdrAgent } }>(args, {
-    ...params.options,
-    timeoutMs: params.options?.timeoutMs ?? 35_000,
-  });
+  const shellReadyDeadline = Date.now() + PANE_SHELL_READY_TIMEOUT_MS;
+  let response: { result: { agent: HerdrAgent } };
+  while (true) {
+    try {
+      response = await runJson<{ result: { agent: HerdrAgent } }>(args, {
+        ...params.options,
+        timeoutMs: params.options?.timeoutMs ?? 35_000,
+      });
+      break;
+    } catch (error) {
+      if (!isPaneShellStarting(error) || Date.now() >= shellReadyDeadline) throw error;
+      await waitForPaneShellRetry(params.options?.signal);
+    }
+  }
   const agent = validateAgent(response.result.agent);
   if (
     agent.pane_id !== params.paneId ||

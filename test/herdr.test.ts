@@ -25,6 +25,17 @@ case "$FAKE_HERDR_MODE" in
   matching-agent)
     printf '%s\n' '{"result":{"agent":{"name":"worker","agent_status":"idle","pane_id":"w1:p2","tab_id":"w1:t1","workspace_id":"w1"}}}'
     ;;
+  shell-starting-once)
+    attempts=0
+    if [ -f "$FAKE_ATTEMPTS_FILE" ]; then attempts=$(cat "$FAKE_ATTEMPTS_FILE"); fi
+    attempts=$((attempts + 1))
+    printf '%s' "$attempts" > "$FAKE_ATTEMPTS_FILE"
+    if [ "$attempts" -eq 1 ]; then
+      printf '%s\n' '{"error":{"code":"pane_not_available","message":"agent target pane w1:p2 is not an available shell"}}' >&2
+      exit 1
+    fi
+    printf '%s\n' '{"result":{"agent":{"name":"worker","agent_status":"idle","pane_id":"w1:p2","tab_id":"w1:t1","workspace_id":"w1"}}}'
+    ;;
   wrong-pane)
     printf '%s\n' '{"result":{"agent":{"name":"worker","agent_status":"idle","pane_id":"w1:p9","tab_id":"w1:t1","workspace_id":"w1"}}}'
     ;;
@@ -66,6 +77,7 @@ esac
       else process.env.FAKE_HERDR_MODE = previousMode;
       delete process.env.FAKE_SIDE_EFFECT;
       delete process.env.FAKE_ARGS_FILE;
+      delete process.env.FAKE_ATTEMPTS_FILE;
       rmSync(dir, { recursive: true, force: true });
     },
   };
@@ -82,6 +94,22 @@ test("startPiAgent returns an agent with the requested identity", async () => {
     const worker = await startWorker();
     assert.equal(worker.name, "worker");
     assert.equal(worker.pane_id, "w1:p2");
+  } finally {
+    fake.cleanup();
+  }
+});
+
+test("startPiAgent retries while a newly split pane shell is still starting", async () => {
+  const fake = useFakeHerdr();
+  const attemptsFile = join(fake.dir, "attempts");
+  try {
+    fake.setMode("shell-starting-once");
+    process.env.FAKE_ATTEMPTS_FILE = attemptsFile;
+
+    const worker = await startWorker();
+
+    assert.equal(worker.name, "worker");
+    assert.equal(readFileSync(attemptsFile, "utf8"), "2");
   } finally {
     fake.cleanup();
   }
