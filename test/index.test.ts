@@ -36,7 +36,23 @@ function makeHarness(sessionId: string) {
       messages.push(message);
     },
   };
-  herdrSubagents(pi);
+  // This harness models an unmarked parent. Keep its role independent of a
+  // delegated worker's inherited environment when the suite is run there.
+  const workerEnv = [
+    "PI_HERDR_SUBAGENT",
+    "PI_HERDR_HANDOVER_FILE",
+    "PI_HERDR_JOB_ID",
+  ] as const;
+  const previousWorkerEnv = Object.fromEntries(workerEnv.map((name) => [name, process.env[name]]));
+  for (const name of workerEnv) delete process.env[name];
+  try {
+    herdrSubagents(pi);
+  } finally {
+    for (const name of workerEnv) {
+      if (previousWorkerEnv[name] === undefined) delete process.env[name];
+      else process.env[name] = previousWorkerEnv[name];
+    }
+  }
 
   const ctx: any = {
     cwd: process.cwd(),
