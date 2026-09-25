@@ -74,17 +74,35 @@ interface FakeHerdr {
   cleanup(): void;
 }
 
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
 function useFakeHerdr(scenario: string): FakeHerdr {
   const dir = mkdtempSync(join(tmpdir(), "fake-herdr-index-"));
   const executable = join(dir, "herdr");
   const closed = join(dir, "pane-closed");
   const splitStarted = join(dir, "split-started");
   const handoverState = join(dir, "handover-state.json");
+  const script = join(dir, "fake-herdr.cjs");
+  // Some endpoint-security agents SIGKILL `node <script>` when any argument
+  // is 1000+ characters, and pane split passes the full PATH as one. The
+  // executable is therefore a shell shim that hands its argv to Node through a
+  // NUL-separated file, so the Node process only ever sees short arguments.
   writeFileSync(
     executable,
-    `#!/usr/bin/env node
-const fs = require("node:fs");
-const args = process.argv.slice(2);
+    `#!/bin/sh
+args_file=$(mktemp ${shellQuote(join(dir, "args.XXXXXX"))}) || exit 1
+printf '%s\\0' "$@" > "$args_file"
+exec ${shellQuote(process.execPath)} ${shellQuote(script)} "$args_file"
+`,
+  );
+  writeFileSync(
+    script,
+    `const fs = require("node:fs");
+const argsFile = process.argv[2];
+const args = fs.readFileSync(argsFile, "utf8").split("\\0").slice(0, -1);
+fs.rmSync(argsFile, { force: true });
 const command = args.slice(0, 2).join(" ");
 const agent = (name, status = "idle", paneId = "w-test:child", session = "session-a") => ({
   agent: "pi", name, agent_status: status,
