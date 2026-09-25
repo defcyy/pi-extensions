@@ -1,7 +1,7 @@
 {
   "name": "pi-herdr-subagents",
   "version": "0.1.0",
-  "description": "Pi extensions for Herdr subagents and focused web development research",
+  "description": "Pi extensions for Herdr subagents, focused web development research, and GitHub Copilot skills",
   "type": "module",
   "keywords": [
     "pi-package",
@@ -9,7 +9,8 @@
     "herdr",
     "subagents",
     "web-search",
-    "github"
+    "github",
+    "skills"
   ],
   "license": "MIT",
   "packageManager": "pnpm@10.17.1",
@@ -34,7 +35,8 @@
   "pi": {
     "extensions": [
       "./pi-extension/herdr-subagents/index.ts",
-      "./pi-extension/web-search/index.ts"
+      "./pi-extension/web-search/index.ts",
+      "./pi-extension/github-skills/index.ts"
     ]
   }
 }
