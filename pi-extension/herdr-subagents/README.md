@@ -97,7 +97,7 @@ Workers receive explicit boundary instructions to complete work directly and use
 
 ### `herdr_subagent_control`
 
-Call without arguments to list active and recent jobs. For an active job:
+Call without arguments (or with `action: "list"`) to list active and recent jobs. Controlling a job that already finished reports its last state instead of a bare "not found". For an active job:
 
 - `focus` — focus its pane;
 - `interrupt` — send Ctrl-C while retaining supervision;

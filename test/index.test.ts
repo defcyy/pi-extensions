@@ -351,6 +351,13 @@ test("closing an owned active job stops it without delivering a failure", async 
     );
     await waitFor(() => !__test__.runningJobs.has(jobId));
 
+    await assert.rejects(
+      harness.tools.get("herdr_subagent_control").execute("control-2", { jobId, action: "close" }, undefined),
+      new RegExp(`job ${jobId} .* is no longer active`),
+    );
+    const listed = await harness.tools.get("herdr_subagent_control").execute("control-3", { action: "list" }, undefined);
+    assert.match(listed.content[0].text, new RegExp(jobId));
+
     assert.equal(existsSync(fake.closed), true);
     assert.deepEqual(harness.entries, []);
     assert.deepEqual(harness.messages, []);

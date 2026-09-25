@@ -93,9 +93,9 @@ const DispatchParams = Type.Object({
   ),
 });
 
-const ControlAction = StringEnum(["interrupt", "detach", "close", "focus"] as const, {
+const ControlAction = StringEnum(["list", "interrupt", "detach", "close", "focus"] as const, {
   description:
-    "interrupt sends Ctrl-C; detach stops supervision but leaves the pane; close closes it; focus opens it.",
+    "list shows active and recent jobs (same as omitting action); interrupt sends Ctrl-C; detach stops supervision but leaves the pane; close closes it; focus opens it.",
 });
 const ControlParams = Type.Object({
   jobId: Type.Optional(
@@ -1007,7 +1007,10 @@ export default function herdrSubagents(pi: ExtensionAPI) {
     parameters: ControlParams,
     async execute(_toolCallId, params: ControlInput, signal) {
       assertHerdrRuntime();
-      if (!params.jobId && !params.action) {
+      if (!params.action || params.action === "list") {
+        if (params.jobId && !params.action) {
+          throw new Error("jobId and action must be provided together.");
+        }
         const activeLines = [...runningJobs.values()].map(
           (job) =>
             `• ${job.id} · ${job.displayName} [${job.paneId}] · ${job.state} · ${elapsed(job.startedAt)} · one-shot`,
@@ -1034,7 +1037,15 @@ export default function herdrSubagents(pi: ExtensionAPI) {
       }
 
       const job = runningJobs.get(params.jobId);
-      if (!job) throw new Error(`No active Herdr subagent job has ID ${params.jobId}.`);
+      if (!job) {
+        const recent = recentJobs.find((entry) => entry.id === params.jobId);
+        if (recent) {
+          throw new Error(
+            `Herdr subagent job ${params.jobId} (${recent.displayName}) is no longer active (last state "${recent.state}", ran ${recent.elapsed}), so ${params.action} cannot be applied.`,
+          );
+        }
+        throw new Error(`No active Herdr subagent job has ID ${params.jobId}. Call herdr_subagent_control with no arguments to list jobs.`);
+      }
 
       if (params.action === "focus") {
         await withMutationLock(() =>
