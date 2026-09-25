@@ -35,7 +35,6 @@ import {
   isDelegatedWorker,
   makeTaskAgentName,
   MAX_CONCURRENT_JOBS,
-  resolveModelSelection,
   workerPaneEnvironment,
   workerToolAllowlist,
 } from "./policy.ts";
@@ -71,13 +70,6 @@ const DispatchParams = Type.Object({
     }),
   ),
   direction: Type.Optional(Direction),
-  model: Type.Optional(
-    Type.String({
-      minLength: 1,
-      description:
-        "Available Pi model as provider/model (or an unambiguous model ID). Defaults to the parent model.",
-    }),
-  ),
   thinking: Type.Optional(ThinkingLevel),
   tools: Type.Optional(
     Type.String({
@@ -289,7 +281,6 @@ function assertNonBlankDispatch(params: DispatchInput): void {
     ["task", params.task],
     ["parallelReason", params.parallelReason],
     ["cwd", params.cwd],
-    ["model", params.model],
     ["tools", params.tools],
     ["systemPrompt", params.systemPrompt],
   ];
@@ -671,7 +662,7 @@ async function runJob(pi: ExtensionAPI, job: RunningJob, params: DispatchInput):
         startPiAgent({
           name: job.target,
           paneId: job.paneId,
-          model: params.model,
+          model: job.model,
           thinking: params.thinking,
           tools: workerToolAllowlist(params.tools),
           systemPrompt: params.systemPrompt,
@@ -889,7 +880,7 @@ export default function herdrSubagents(pi: ExtensionAPI) {
       "Call herdr_subagent only when work is substantial and independent and you can identify useful work to continue concurrently. Do not delegate sequential steps, small tasks, or work requiring frequent coordination.",
       "Provide parallelReason with the concrete independent work the main agent will perform while the worker runs. After dispatching, do that work or end the turn; never poll for completion.",
       "A worker needing another agent must use caller_ping. That only returns a proposal; evaluate whether parallel delegation is truly needed before starting another fresh worker.",
-      "A fresh worker inherits the parent model and thinking level unless explicitly overridden.",
+      "A fresh worker always uses the parent model and inherits its thinking level unless explicitly overridden.",
     ],
     parameters: DispatchParams,
 
@@ -901,18 +892,14 @@ export default function herdrSubagents(pi: ExtensionAPI) {
           `At most ${MAX_CONCURRENT_JOBS} Herdr subagents may be active. Wait for one to finish or use herdr_subagent_control to detach it.`,
         );
       }
-      const selectableModels =
-        ctx.scopedModels.length > 0
-          ? ctx.scopedModels.map((entry) => entry.model)
-          : ctx.modelRegistry.getAvailable();
-      const effectiveModel = resolveModelSelection({
-        requested: params.model,
-        parent: ctx.model ? { provider: ctx.model.provider, id: ctx.model.id } : undefined,
-        available: selectableModels.map((model) => ({ provider: model.provider, id: model.id })),
-      });
+      // A fresh Pi process has its own defaults, so pass the parent's active
+      // model explicitly instead of exposing a separate worker model selector.
+      if (!ctx.model) {
+        throw new Error("Cannot start a subagent because the parent has no active model.");
+      }
+      const parentModel = `${ctx.model.provider}/${ctx.model.id}`;
       const effectiveParams: DispatchInput = {
         ...params,
-        model: effectiveModel,
         thinking: params.thinking ?? ctx.thinkingLevel,
       };
 
@@ -953,7 +940,7 @@ export default function herdrSubagents(pi: ExtensionAPI) {
         parentSessionId,
         controller: new AbortController(),
         sessionCursor: { offset: 0 },
-        model: effectiveModel,
+        model: parentModel,
         handoverFile,
       };
       runningJobs.set(id, job);

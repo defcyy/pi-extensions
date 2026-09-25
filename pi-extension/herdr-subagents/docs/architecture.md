@@ -14,7 +14,7 @@ It intentionally does not provide reusable agents, session continuation, arbitra
 |---|---|
 | `index.ts` | Main and worker tool surfaces, jobs, supervision, handovers, controls, completion delivery, and UI |
 | `herdr.ts` | Bounded Herdr CLI calls and response validation |
-| `policy.ts` | Worker environment, concurrency, tool scope, split placement, generated names, and model selection |
+| `policy.ts` | Worker environment, concurrency, tool scope, split placement, and generated names |
 | `session.ts` | Incremental Pi session reading and UTF-8-safe result truncation |
 | `fenced-bin/pi` | Fence-aware launcher for workers of a fenced parent |
 
@@ -65,7 +65,7 @@ A dispatch always follows one path:
 4. Select a split location in the worker area.
 5. Create a fresh marked pane.
 6. Register the job before background execution.
-7. Start a fresh Pi process with inherited or explicit model settings.
+7. Start a fresh Pi process with the parent's active model passed explicitly.
 8. Send exactly one task.
 
 There is no reuse, target, retention, or resume branch.
@@ -181,4 +181,4 @@ Active jobs are not reattached after parent replacement.
 
 ## Tests
 
-The suite covers worker-only tool isolation and handover records, fresh worker environment construction, caller tool allowlisting, four-job admission, split placement, model resolution, session extraction, UTF-8 truncation, identity mismatches, command timeout and abort behavior, shutdown and close races, and Fence startup.
+The suite covers worker-only tool isolation and handover records, fresh worker environment construction, caller tool allowlisting, parent-model forwarding, four-job admission, split placement, session extraction, UTF-8 truncation, identity mismatches, command timeout and abort behavior, shutdown and close races, and Fence startup.

@@ -121,6 +121,7 @@ if (command === "pane layout") {
   fs.writeFileSync(process.env.FAKE_PANE_CLOSED, "closed");
   setTimeout(() => process.exit(0), process.env.FAKE_SCENARIO === "close-race" ? 200 : 0);
 } else if (command === "agent start") {
+  if (process.env.FAKE_START_ARGS) fs.writeFileSync(process.env.FAKE_START_ARGS, JSON.stringify(args));
   if (process.env.FAKE_SCENARIO === "wait-mismatch") {
     console.error(JSON.stringify({error:{message:"simulated start failure"}}));
     process.exit(1);
@@ -185,6 +186,7 @@ if (command === "pane layout") {
     pane: process.env.HERDR_PANE_ID,
     workspace: process.env.HERDR_WORKSPACE_ID,
     fenceSandbox: process.env.FENCE_SANDBOX,
+    startArgs: process.env.FAKE_START_ARGS,
   };
   process.env.PATH = `${dir}:${previous.path ?? ""}`;
   process.env.HERDR_ENV = "1";
@@ -210,6 +212,8 @@ if (command === "pane layout") {
       else process.env.HERDR_WORKSPACE_ID = previous.workspace;
       if (previous.fenceSandbox === undefined) delete process.env.FENCE_SANDBOX;
       else process.env.FENCE_SANDBOX = previous.fenceSandbox;
+      if (previous.startArgs === undefined) delete process.env.FAKE_START_ARGS;
+      else process.env.FAKE_START_ARGS = previous.startArgs;
       delete process.env.FAKE_SCENARIO;
       delete process.env.FAKE_PANE_CLOSED;
       delete process.env.FAKE_SPLIT_STARTED;
@@ -356,10 +360,12 @@ test("closing an owned active job stops it without delivering a failure", async 
   }
 });
 
-test("a successful one-shot worker returns its result and closes its pane", async () => {
+test("a successful one-shot worker uses the parent model and closes its pane", async () => {
   const fake = useFakeHerdr("success");
+  const startArgs = join(fake.closed, "..", "agent-start-args.json");
   const harness = makeHarness("session-success");
   try {
+    process.env.FAKE_START_ARGS = startArgs;
     const queued = await dispatch(
       harness,
       "Review the API",
@@ -370,6 +376,11 @@ test("a successful one-shot worker returns its result and closes its pane", asyn
     const completion = harness.entries.at(-1);
     assert.equal(completion.details.status, "completed");
     assert.match(completion.content, /Worker result/);
+    const args = JSON.parse(readFileSync(startArgs, "utf8")) as string[];
+    assert.equal(args[0], "agent");
+    assert.equal(args[1], "start");
+    assert.equal(args[args.indexOf("--model") + 1], "test/model");
+    assert.equal(args[args.indexOf("--thinking") + 1], "low");
     assert.equal(existsSync(fake.closed), true);
   } finally {
     shutdown(harness);

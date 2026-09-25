@@ -1,10 +1,5 @@
 import type { HerdrAgent, HerdrLayout } from "./herdr.ts";
 
-export interface ModelRef {
-  provider: string;
-  id: string;
-}
-
 const SETTLED_AGENT_STATES = new Set(["idle", "done"]);
 export const HERDR_SUBAGENT_ENV = "PI_HERDR_SUBAGENT";
 export const HERDR_HANDOVER_FILE_ENV = "PI_HERDR_HANDOVER_FILE";
@@ -85,46 +80,4 @@ export function makeTaskAgentName(task: string, id: string): string {
   const suffix = id.toLowerCase().replace(/[^a-z0-9_-]/g, "").slice(0, 8);
   const prefix = base.slice(0, Math.max(1, 31 - suffix.length)).replace(/-+$/, "") || "pi";
   return `${prefix}-${suffix}`.slice(0, 32);
-}
-
-/**
- * Resolve a user-facing model selector to Pi's canonical provider/model ID.
- * A missing selector inherits the parent model. Bare model IDs are accepted
- * only when they identify exactly one available model.
- */
-export function resolveModelSelection(params: {
-  requested?: string;
-  parent?: ModelRef;
-  available: ModelRef[];
-}): string | undefined {
-  const requested = params.requested?.trim();
-  if (!requested) {
-    return params.parent ? `${params.parent.provider}/${params.parent.id}` : undefined;
-  }
-
-  const slash = requested.indexOf("/");
-  if (slash > 0) {
-    const provider = requested.slice(0, slash);
-    const id = requested.slice(slash + 1);
-    const match = params.available.find(
-      (candidate) => candidate.provider === provider && candidate.id === id,
-    );
-    if (match) return `${match.provider}/${match.id}`;
-    throw new Error(
-      `Model "${requested}" is not available. Use an authenticated provider/model from Pi's available model list.`,
-    );
-  }
-
-  const matches = params.available.filter((candidate) => candidate.id === requested);
-  if (matches.length === 1) return `${matches[0].provider}/${matches[0].id}`;
-  if (matches.length > 1) {
-    throw new Error(
-      `Model ID "${requested}" is available from multiple providers: ${matches
-        .map((candidate) => `${candidate.provider}/${candidate.id}`)
-        .join(", ")}. Specify provider/model.`,
-    );
-  }
-  throw new Error(
-    `Model "${requested}" is not available. Specify an authenticated provider/model reported by Pi.`,
-  );
 }

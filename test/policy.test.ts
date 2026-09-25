@@ -12,7 +12,6 @@ import {
   HERDR_SUBAGENT_ENV,
   isDelegatedWorker,
   makeTaskAgentName,
-  resolveModelSelection,
   workerPaneEnvironment,
   workerToolAllowlist,
 } from "../pi-extension/herdr-subagents/policy.ts";
@@ -135,48 +134,5 @@ test("makeTaskAgentName derives a valid unique Herdr name from the task", () => 
   assert.doesNotMatch(
     makeTaskAgentName("Return exactly epsilon with a deliberately long description", "ABCDEF12"),
     /--abcdef12$/,
-  );
-});
-
-test("resolveModelSelection inherits the parent model by default", () => {
-  assert.equal(
-    resolveModelSelection({
-      parent: { provider: "anthropic", id: "claude-sonnet" },
-      available: [{ provider: "anthropic", id: "claude-sonnet" }],
-    }),
-    "anthropic/claude-sonnet",
-  );
-});
-
-test("resolveModelSelection validates canonical and unambiguous bare model IDs", () => {
-  const available = [
-    { provider: "anthropic", id: "claude-sonnet" },
-    { provider: "openai", id: "gpt-5" },
-  ];
-  assert.equal(
-    resolveModelSelection({ requested: "openai/gpt-5", available }),
-    "openai/gpt-5",
-  );
-  assert.equal(
-    resolveModelSelection({ requested: "claude-sonnet", available }),
-    "anthropic/claude-sonnet",
-  );
-  assert.throws(
-    () => resolveModelSelection({ requested: "openai/missing", available }),
-    /not available/,
-  );
-});
-
-test("resolveModelSelection rejects ambiguous bare model IDs", () => {
-  assert.throws(
-    () =>
-      resolveModelSelection({
-        requested: "shared-model",
-        available: [
-          { provider: "provider-a", id: "shared-model" },
-          { provider: "provider-b", id: "shared-model" },
-        ],
-      }),
-    /multiple providers/,
   );
 });

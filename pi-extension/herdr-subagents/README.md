@@ -56,7 +56,7 @@ Do not delegate sequential steps, small tasks, or work requiring frequent coordi
 
 1. The main extension reserves one of four job slots.
 2. It creates a fresh Herdr pane marked with `PI_HERDR_SUBAGENT=1`.
-3. It starts a fresh Pi process and sends one self-contained task.
+3. It starts a fresh Pi process with the parent session's active model and sends one self-contained task.
 4. It supervises the worker and extracts only its new assistant output.
 5. It closes the successful worker pane and delivers the result.
 
@@ -90,7 +90,6 @@ Workers receive explicit boundary instructions to complete work directly and use
 | `parallelReason` | required | Useful independent work the main agent will perform concurrently |
 | `cwd` | parent cwd | Worker working directory |
 | `direction` | `auto` | `auto`, `right`, or `down` |
-| `model` | parent model | Available `provider/model` override |
 | `thinking` | parent level | Thinking-level override |
 | `tools` | Pi default | Comma-separated worker tool allowlist; `caller_ping` is always added |
 | `systemPrompt` | — | Additional worker system prompt |
