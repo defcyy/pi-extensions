@@ -7,10 +7,61 @@ export interface SearchResult {
 const MAX_FETCH_BYTES = 1_000_000;
 const MAX_OUTPUT_CHARS = 60_000;
 
+const SITE_OPERATOR = /(^|\s)site:\S+/gi;
+
+/**
+ * Apply the `site` parameter as a single `site:` operator. When `site` is set,
+ * any `site:` operators the model also wrote into the query are dropped so the
+ * search engine never receives conflicting restrictions.
+ */
 export function appendSiteFilter(query: string, site?: string): string {
-  const normalizedQuery = query.trim();
   const normalizedSite = site?.trim().replace(/^https?:\/\//, "").replace(/\/$/, "");
-  return normalizedSite ? `${normalizedQuery} site:${normalizedSite}` : normalizedQuery;
+  if (!normalizedSite) return query.trim();
+  const strippedQuery = query.replace(SITE_OPERATOR, " ").replace(/\s+/g, " ").trim();
+  return strippedQuery ? `${strippedQuery} site:${normalizedSite}` : `site:${normalizedSite}`;
+}
+
+/**
+ * DuckDuckGo answers automated traffic bursts with HTTP 202 and an "anomaly"
+ * challenge page instead of results.
+ */
+export function isDuckDuckGoChallenge(status: number, html: string): boolean {
+  if (status === 202) return true;
+  return /anomaly-modal|anomaly\.js|challenge-form/i.test(html);
+}
+
+/**
+ * Serializes calls and keeps a minimum gap between their starts. Parallel
+ * bursts of searches are what trigger DuckDuckGo's bot challenge.
+ */
+export function createThrottle(minIntervalMs: number, now: () => number = Date.now) {
+  let tail: Promise<unknown> = Promise.resolve();
+  let lastStart = -Infinity;
+  return function throttle<T>(task: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    const run = tail.then(async () => {
+      const wait = lastStart + minIntervalMs - now();
+      if (wait > 0) await delay(wait, signal);
+      lastStart = now();
+      return task();
+    });
+    tail = run.catch(() => {});
+    return run;
+  };
+}
+
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(signal.reason);
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason);
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 export function duckDuckGoSearchUrl(params: {

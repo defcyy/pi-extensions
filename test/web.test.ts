@@ -5,7 +5,9 @@ import {
   appendSiteFilter,
   assertHttpUrl,
   clipContent,
+  createThrottle,
   duckDuckGoSearchUrl,
+  isDuckDuckGoChallenge,
   githubSearchUrl,
   htmlToText,
   normalizeFetchedContent,
@@ -80,6 +82,62 @@ test("DuckDuckGo queries keep the user query and apply site/recency filters", ()
   assert.equal(url.hostname, "html.duckduckgo.com");
   assert.equal(url.searchParams.get("q"), query);
   assert.equal(url.searchParams.get("df"), "w");
+});
+
+test("site filter replaces site: operators already written into the query", () => {
+  assert.equal(
+    appendSiteFilter("site:buf.build/docs gradle plugin build.buf", "buf.build"),
+    "gradle plugin build.buf site:buf.build",
+  );
+  assert.equal(appendSiteFilter("site:a.com foo", undefined), "site:a.com foo");
+  assert.equal(appendSiteFilter("site:a.com", "b.com"), "site:b.com");
+});
+
+test("DuckDuckGo bot challenges are detected by status or anomaly markup", () => {
+  assert.equal(isDuckDuckGoChallenge(202, ""), true);
+  assert.equal(isDuckDuckGoChallenge(200, '<div class="anomaly-modal__box"></div>'), true);
+  assert.equal(isDuckDuckGoChallenge(200, '<a class="result__a" href="https://x.test">x</a>'), false);
+});
+
+test("web_search reports a DuckDuckGo challenge as a rate limit instead of a parse failure", async () => {
+  const tools = new Map<string, any>();
+  webSearchExtension({ registerTool(tool: any) { tools.set(tool.name, tool); } } as any);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response('<form id="challenge-form"></form>', { status: 202 })) as typeof fetch;
+  try {
+    await assert.rejects(
+      tools.get("web_search").execute("challenged", { query: "typescript", site: "github.com" }),
+      /rate-limited this IP with a bot challenge/,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("throttle serializes tasks and spaces their starts", async () => {
+  let clock = 0;
+  const throttle = createThrottle(100, () => clock);
+  const starts: number[] = [];
+  let active = 0;
+  let maxActive = 0;
+  const task = async () => {
+    starts.push(clock);
+    active += 1;
+    maxActive = Math.max(maxActive, active);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    clock += 10;
+    active -= 1;
+  };
+  await Promise.all([throttle(task), throttle(task), throttle(task)]);
+  assert.equal(maxActive, 1);
+  assert.equal(starts[0], 0);
+  assert.equal(starts.length, 3);
+});
+
+test("throttle does not wedge after a failed task", async () => {
+  const throttle = createThrottle(0);
+  await assert.rejects(throttle(async () => { throw new Error("boom"); }), /boom/);
+  assert.equal(await throttle(async () => "ok"), "ok");
 });
 
 test("DuckDuckGo result parsing resolves redirect URLs and extracts snippets", () => {

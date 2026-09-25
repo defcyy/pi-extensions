@@ -33,7 +33,9 @@ The extension sends `GITHUB_TOKEN` only to the GitHub API.
 
 ### `web_search`
 
-Search the web through DuckDuckGo. Use `site` to target official docs, GitHub, or another domain.
+Search the web through DuckDuckGo. Use `site` to target official docs or another domain; any `site:` operators already in `query` are replaced by it. Prefer the GitHub tools for GitHub issues, PRs, and repositories.
+
+Searches are serialized and spaced at least 1.5 s apart, because parallel bursts trigger DuckDuckGo's bot challenge (HTTP 202 "anomaly" page). A challenged request fails with an explicit rate-limit error; the block typically lasts several minutes, so retries do not help. A genuine empty result returns "No results found." instead of an error.
 
 ```ts
 web_search({

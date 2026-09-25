@@ -5,9 +5,11 @@ import {
   appendSiteFilter,
   assertHttpUrl,
   clipContent,
+  createThrottle,
   githubHeaders,
   githubSearchUrl,
   duckDuckGoSearchUrl,
+  isDuckDuckGoChallenge,
   normalizeFetchedContent,
   parseDuckDuckGoResults,
   readResponseBody,
@@ -99,24 +101,44 @@ function normalizeRepo(value: string): string {
   return repo;
 }
 
+// One DuckDuckGo request at a time, spaced out: parallel bursts trigger its bot challenge.
+const DUCKDUCKGO_MIN_INTERVAL_MS = 1_500;
+const throttleDuckDuckGo = createThrottle(DUCKDUCKGO_MIN_INTERVAL_MS);
+
+const DUCKDUCKGO_CHALLENGE_MESSAGE =
+  "DuckDuckGo rate-limited this IP with a bot challenge (HTTP 202); retrying now will not help and the block usually lasts several minutes. " +
+  "Stop issuing web_search calls for now. Use github_issue_search / github_repo_search for GitHub content, or fetch_url on a known documentation URL.";
+
 export default function webSearch(pi: ExtensionAPI) {
   pi.registerTool({
     name: "web_search",
     label: "Web Search",
-    description: "Search the web through DuckDuckGo's HTML results. Use site to restrict to official documentation, GitHub, or another domain. No API key is required.",
+    description: "Search the web through DuckDuckGo's HTML results. Use site to restrict to official documentation or another domain (do not also write site: in the query). Searches run one at a time, so avoid firing many in parallel. For GitHub issues, PRs, or repositories prefer github_issue_search / github_repo_search. No API key is required.",
     parameters: WebSearchParams,
     async execute(_toolCallId, params: WebSearchInput, signal) {
       const query = appendSiteFilter(params.query, params.site);
       if (!query.trim()) throw new Error("query cannot be blank.");
-      const { response, text } = await requestText(
-        duckDuckGoSearchUrl({ query, recency: params.recency }),
-        { headers: { Accept: "text/html" } },
+      const { response, text } = await throttleDuckDuckGo(
+        () => requestText(
+          duckDuckGoSearchUrl({ query, recency: params.recency }),
+          { headers: { Accept: "text/html" } },
+          signal,
+          "DuckDuckGo search",
+        ),
         signal,
-        "DuckDuckGo search",
       );
+      if (isDuckDuckGoChallenge(response.status, text)) {
+        throw new Error(DUCKDUCKGO_CHALLENGE_MESSAGE);
+      }
       const results = parseDuckDuckGoResults(text).slice(0, params.numResults ?? 5);
       if (results.length === 0) {
-        throw new Error("DuckDuckGo returned no recognizable result entries; its HTML markup may have changed or the request may have been challenged.");
+        if (!/class="[^"]*\bno-results\b/i.test(text)) {
+          throw new Error("DuckDuckGo returned a page without recognizable result markup; its HTML format may have changed.");
+        }
+        return {
+          content: [{ type: "text", text: "No results found. Try fewer or broader terms, or drop site/recency." }],
+          details: { query, results },
+        };
       }
       return { content: [{ type: "text", text: formatResults(results) }], details: { query, results } };
     },
