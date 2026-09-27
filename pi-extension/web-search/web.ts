@@ -1,3 +1,5 @@
+import { setTimeout as sleep } from "node:timers/promises";
+
 export interface SearchResult {
   title: string;
   url: string;
@@ -34,34 +36,19 @@ export function isDuckDuckGoChallenge(status: number, html: string): boolean {
  * Serializes calls and keeps a minimum gap between their starts. Parallel
  * bursts of searches are what trigger DuckDuckGo's bot challenge.
  */
-export function createThrottle(minIntervalMs: number, now: () => number = Date.now) {
+export function createThrottle(minIntervalMs: number) {
   let tail: Promise<unknown> = Promise.resolve();
   let lastStart = -Infinity;
   return function throttle<T>(task: () => Promise<T>, signal?: AbortSignal): Promise<T> {
     const run = tail.then(async () => {
-      const wait = lastStart + minIntervalMs - now();
-      if (wait > 0) await delay(wait, signal);
-      lastStart = now();
+      const wait = lastStart + minIntervalMs - Date.now();
+      if (wait > 0) await sleep(wait, undefined, { signal });
+      lastStart = Date.now();
       return task();
     });
     tail = run.catch(() => {});
     return run;
   };
-}
-
-function delay(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) return reject(signal.reason);
-    const timer = setTimeout(() => {
-      signal?.removeEventListener("abort", onAbort);
-      resolve();
-    }, ms);
-    const onAbort = () => {
-      clearTimeout(timer);
-      reject(signal?.reason);
-    };
-    signal?.addEventListener("abort", onAbort, { once: true });
-  });
 }
 
 export function duckDuckGoSearchUrl(params: {

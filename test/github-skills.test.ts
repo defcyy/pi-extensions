@@ -19,7 +19,7 @@ function skill(dir: string, name: string): string {
 }
 
 function discover(cwd: string, trusted = true) {
-  let handler: ((event: any, ctx: any) => Promise<any>) | undefined;
+  let handler: ((event: any, ctx: any) => any) | undefined;
   githubSkills({ on(name: string, fn: any) { if (name === "resources_discover") handler = fn; } } as any);
   assert.ok(handler, "registers a resources_discover handler");
   return handler({ type: "resources_discover", cwd, reason: "startup" }, { isProjectTrusted: () => trusted });

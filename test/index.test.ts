@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { Check } from "typebox/value";
 import herdrSubagents, { __test__ } from "../pi-extension/herdr-subagents/index.ts";
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -171,8 +172,6 @@ if (command === "pane layout") {
       process.exit(1);
     }, 5);
   }
-} else if (command === "agent read") {
-  process.stdout.write("screen output");
 } else {
   console.log(JSON.stringify({result:{}}));
 }
@@ -355,8 +354,28 @@ test("closing an owned active job stops it without delivering a failure", async 
       harness.tools.get("herdr_subagent_control").execute("control-2", { jobId, action: "close" }, undefined),
       new RegExp(`job ${jobId} .* is no longer active`),
     );
-    const listed = await harness.tools.get("herdr_subagent_control").execute("control-3", { action: "list" }, undefined);
+    const controlTool = harness.tools.get("herdr_subagent_control");
+    assert.equal(Check(controlTool.parameters, { action: "list" }), true);
+    const listed = await controlTool.execute("control-3", { action: "list" }, undefined);
     assert.match(listed.content[0].text, new RegExp(jobId));
+    await assert.rejects(
+      harness.tools.get("herdr_subagent_control").execute(
+        "control-4",
+        { jobId, action: "list" },
+        undefined,
+      ),
+      /jobId cannot be used when listing jobs/,
+    );
+
+    shutdown(harness);
+    const replacement = makeHarness("session-after-close");
+    const replacementList = await replacement.tools.get("herdr_subagent_control").execute(
+      "control-5",
+      { action: "list" },
+      undefined,
+    );
+    assert.doesNotMatch(replacementList.content[0].text, new RegExp(jobId));
+    shutdown(replacement);
 
     assert.equal(existsSync(fake.closed), true);
     assert.deepEqual(harness.entries, []);

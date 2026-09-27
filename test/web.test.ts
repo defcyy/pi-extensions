@@ -115,23 +115,23 @@ test("web_search reports a DuckDuckGo challenge as a rate limit instead of a par
 });
 
 test("throttle serializes tasks and spaces their starts", async () => {
-  let clock = 0;
-  const throttle = createThrottle(100, () => clock);
+  const minIntervalMs = 30;
+  const throttle = createThrottle(minIntervalMs);
   const starts: number[] = [];
   let active = 0;
   let maxActive = 0;
   const task = async () => {
-    starts.push(clock);
+    starts.push(Date.now());
     active += 1;
     maxActive = Math.max(maxActive, active);
     await new Promise((resolve) => setTimeout(resolve, 5));
-    clock += 10;
     active -= 1;
   };
   await Promise.all([throttle(task), throttle(task), throttle(task)]);
   assert.equal(maxActive, 1);
-  assert.equal(starts[0], 0);
   assert.equal(starts.length, 3);
+  assert.ok(starts[1] - starts[0] >= minIntervalMs - 2);
+  assert.ok(starts[2] - starts[1] >= minIntervalMs - 2);
 });
 
 test("throttle does not wedge after a failed task", async () => {

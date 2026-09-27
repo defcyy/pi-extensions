@@ -106,10 +106,20 @@ test("startPiAgent retries while a newly split pane shell is still starting", as
     fake.setMode("shell-starting-once");
     process.env.FAKE_ATTEMPTS_FILE = attemptsFile;
 
-    const worker = await startWorker();
+    let wrappedAttempts = 0;
+    const worker = await startPiAgent({
+      name: "worker",
+      paneId: "w1:p2",
+      options: { timeoutMs: 1_000 },
+      async runAttempt(attempt) {
+        wrappedAttempts++;
+        return await attempt();
+      },
+    });
 
     assert.equal(worker.name, "worker");
     assert.equal(readFileSync(attemptsFile, "utf8"), "2");
+    assert.equal(wrappedAttempts, 2);
   } finally {
     fake.cleanup();
   }

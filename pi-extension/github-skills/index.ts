@@ -48,17 +48,12 @@ export function findGithubSkillDirs(cwd: string): string[] {
 }
 
 export default function githubSkills(pi: ExtensionAPI) {
-  pi.on("resources_discover", async (event, ctx) => {
+  pi.on("resources_discover", (event, ctx) => {
     // Honor an explicit "don't trust" decision like Pi does for project
     // skills. Folders without Pi-specific project resources count as trusted,
     // so Copilot-only repositories load without a prompt.
     if (!ctx.isProjectTrusted()) return {};
-    try {
-      const skillPaths = findGithubSkillDirs(event.cwd);
-      return skillPaths.length > 0 ? { skillPaths } : {};
-    } catch {
-      // Discovery is best-effort and must never break startup.
-      return {};
-    }
+    const skillPaths = findGithubSkillDirs(event.cwd);
+    return skillPaths.length > 0 ? { skillPaths } : {};
   });
 }

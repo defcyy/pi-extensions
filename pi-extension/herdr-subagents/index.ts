@@ -145,7 +145,7 @@ interface RunningJob {
   controller: AbortController;
   sessionFile?: string;
   sessionCursor: SessionCursor;
-  model?: string;
+  model: string;
   handoverFile: string;
 }
 
@@ -161,6 +161,7 @@ interface RecentJob {
   paneId: string;
   state: JobState;
   elapsed: string;
+  parentSessionId: string;
 }
 
 interface HandoverRequest {
@@ -331,10 +332,19 @@ function elapsed(startedAt: number): string {
   return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
 
+function activeSessionJobs(): RunningJob[] {
+  return [...runningJobs.values()].filter((job) => job.parentSessionId === activeSessionId);
+}
+
+function activeSessionRecentJobs(): RecentJob[] {
+  return recentJobs.filter((job) => job.parentSessionId === activeSessionId);
+}
+
 function updateWidget(): void {
   try {
     if (!latestCtx?.hasUI) return;
-    if (runningJobs.size === 0) {
+    const jobs = activeSessionJobs();
+    if (jobs.length === 0) {
       latestCtx.ui.setWidget("herdr-subagents", undefined);
       return;
     }
@@ -345,9 +355,9 @@ function updateWidget(): void {
         invalidate() {},
         render(width: number) {
           const lines = [
-            theme.fg("accent", theme.bold(`Herdr subagents — ${runningJobs.size} active`)),
+            theme.fg("accent", theme.bold(`Herdr subagents — ${jobs.length} active`)),
           ];
-          for (const job of runningJobs.values()) {
+          for (const job of jobs) {
             const status =
               job.state === "failed"
                 ? theme.fg("error", job.state)
@@ -541,7 +551,7 @@ function flushCompletionQueue(triggerTurn = true): void {
 
 function scheduleCompletionFlush(): void {
   if (completionTimer) clearTimeout(completionTimer);
-  completionTimer = setTimeout(flushCompletionQueue, completionBatchDelay(runningJobs.size));
+  completionTimer = setTimeout(flushCompletionQueue, completionBatchDelay(activeSessionJobs().length));
 }
 
 function queueCompletion(
@@ -658,17 +668,18 @@ async function runJob(pi: ExtensionAPI, job: RunningJob, params: DispatchInput):
     job.state = "starting";
     updateWidget();
     try {
-      startedAgent = await withMutationLock(() =>
-        startPiAgent({
-          name: job.target,
-          paneId: job.paneId,
-          model: job.model,
-          thinking: params.thinking,
-          tools: workerToolAllowlist(params.tools),
-          systemPrompt: params.systemPrompt,
-          options: { signal: job.controller.signal },
-        }),
-      );
+      startedAgent = await startPiAgent({
+        name: job.target,
+        paneId: job.paneId,
+        model: job.model,
+        thinking: params.thinking,
+        tools: workerToolAllowlist(params.tools),
+        systemPrompt: params.systemPrompt,
+        options: { signal: job.controller.signal },
+        // Serialize each Herdr mutation, but release the lock while waiting for
+        // a newly split pane's shell to become ready between retries.
+        runAttempt: withMutationLock,
+      });
     } catch (startError) {
       try {
         startedAgent = assertJobAgentIdentity(
@@ -829,6 +840,7 @@ async function runJob(pi: ExtensionAPI, job: RunningJob, params: DispatchInput):
       paneId: job.paneId,
       state: job.state,
       elapsed: elapsed(job.startedAt),
+      parentSessionId: job.parentSessionId,
     });
     recentJobs.splice(20);
     updateWidget();
@@ -1002,20 +1014,21 @@ export default function herdrSubagents(pi: ExtensionAPI) {
     name: "herdr_subagent_control",
     label: "Herdr Subagent Control",
     description:
-      "List active delegated jobs or control one by job ID. Supports interrupt, detach, close, and focus.",
+      "List active and recent delegated jobs, or control an active job by ID. Supports list, interrupt, detach, close, and focus.",
     promptSnippet: "Inspect or control active Herdr subagent jobs",
     parameters: ControlParams,
     async execute(_toolCallId, params: ControlInput, signal) {
       assertHerdrRuntime();
       if (!params.action || params.action === "list") {
-        if (params.jobId && !params.action) {
-          throw new Error("jobId and action must be provided together.");
+        if (params.jobId) {
+          throw new Error("jobId cannot be used when listing jobs.");
         }
-        const activeLines = [...runningJobs.values()].map(
+        const jobs = activeSessionJobs();
+        const activeLines = jobs.map(
           (job) =>
             `• ${job.id} · ${job.displayName} [${job.paneId}] · ${job.state} · ${elapsed(job.startedAt)} · one-shot`,
         );
-        const recentLines = recentJobs.slice(0, 5).map(
+        const recentLines = activeSessionRecentJobs().slice(0, 5).map(
           (job) => `  ${job.id} · ${job.displayName} · ${job.state} · ${job.elapsed}`,
         );
         const sections = [
@@ -1025,20 +1038,19 @@ export default function herdrSubagents(pi: ExtensionAPI) {
         return {
           content: [{ type: "text", text: sections.join("\n\n") }],
           details: {
-            jobs: [...runningJobs.values()].map(({ controller: _controller, ...job }) => job),
+            jobs: jobs.map(({ controller: _controller, ...job }) => job),
             jobId: null,
             action: null,
             paneId: null,
           } as ControlDetails,
         };
       }
-      if (!params.jobId || !params.action) {
-        throw new Error("jobId and action must be provided together.");
-      }
+      if (!params.jobId) throw new Error("jobId is required for this action.");
 
-      const job = runningJobs.get(params.jobId);
+      const candidate = runningJobs.get(params.jobId);
+      const job = candidate?.parentSessionId === activeSessionId ? candidate : undefined;
       if (!job) {
-        const recent = recentJobs.find((entry) => entry.id === params.jobId);
+        const recent = activeSessionRecentJobs().find((entry) => entry.id === params.jobId);
         if (recent) {
           throw new Error(
             `Herdr subagent job ${params.jobId} (${recent.displayName}) is no longer active (last state "${recent.state}", ran ${recent.elapsed}), so ${params.action} cannot be applied.`,

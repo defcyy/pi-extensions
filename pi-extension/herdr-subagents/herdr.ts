@@ -299,6 +299,7 @@ export async function startPiAgent(params: {
   tools?: string;
   systemPrompt?: string;
   options?: CommandOptions;
+  runAttempt?: <T>(attempt: () => Promise<T>) => Promise<T>;
 }): Promise<HerdrAgent> {
   const args = [
     "agent",
@@ -318,17 +319,29 @@ export async function startPiAgent(params: {
   if (params.systemPrompt) piArgs.push("--append-system-prompt", params.systemPrompt);
   if (piArgs.length > 0) args.push("--", ...piArgs);
 
-  const shellReadyDeadline = Date.now() + PANE_SHELL_READY_TIMEOUT_MS;
+  const commandTimeoutMs = params.options?.timeoutMs ?? 35_000;
+  const runAttempt = params.runAttempt ?? (<T>(attempt: () => Promise<T>) => attempt());
+  let shellReadyDeadline: number | undefined;
+  let lastShellStartingError: unknown;
   let response: { result: { agent: HerdrAgent } };
   while (true) {
     try {
-      response = await runJson<{ result: { agent: HerdrAgent } }>(args, {
-        ...params.options,
-        timeoutMs: params.options?.timeoutMs ?? 35_000,
+      response = await runAttempt(() => {
+        const remainingRetryMs = shellReadyDeadline === undefined
+          ? commandTimeoutMs
+          : shellReadyDeadline - Date.now();
+        if (remainingRetryMs <= 0) throw lastShellStartingError;
+        return runJson<{ result: { agent: HerdrAgent } }>(args, {
+          ...params.options,
+          timeoutMs: Math.min(commandTimeoutMs, remainingRetryMs),
+        });
       });
       break;
     } catch (error) {
-      if (!isPaneShellStarting(error) || Date.now() >= shellReadyDeadline) throw error;
+      if (!isPaneShellStarting(error)) throw error;
+      lastShellStartingError = error;
+      shellReadyDeadline ??= Date.now() + PANE_SHELL_READY_TIMEOUT_MS;
+      if (Date.now() >= shellReadyDeadline) throw error;
       await waitForPaneShellRetry(params.options?.signal);
     }
   }

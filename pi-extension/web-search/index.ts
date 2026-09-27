@@ -103,13 +103,14 @@ function normalizeRepo(value: string): string {
 
 // One DuckDuckGo request at a time, spaced out: parallel bursts trigger its bot challenge.
 const DUCKDUCKGO_MIN_INTERVAL_MS = 1_500;
-const throttleDuckDuckGo = createThrottle(DUCKDUCKGO_MIN_INTERVAL_MS);
 
 const DUCKDUCKGO_CHALLENGE_MESSAGE =
   "DuckDuckGo rate-limited this IP with a bot challenge (HTTP 202); retrying now will not help and the block usually lasts several minutes. " +
   "Stop issuing web_search calls for now. Use github_issue_search / github_repo_search for GitHub content, or fetch_url on a known documentation URL.";
 
 export default function webSearch(pi: ExtensionAPI) {
+  const throttleDuckDuckGo = createThrottle(DUCKDUCKGO_MIN_INTERVAL_MS);
+
   pi.registerTool({
     name: "web_search",
     label: "Web Search",
