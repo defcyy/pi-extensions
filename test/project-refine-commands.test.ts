@@ -40,18 +40,21 @@ async function fixture() {
 
 function harness(f: Awaited<ReturnType<typeof fixture>>, reviewer: ReviewerCall, hasUI = true, consent = true) {
   const events = new Map<string, (...args: any[]) => any>(); let command: any;
-  const output: string[] = []; const notices: string[] = [];
+  const output: string[] = []; const notices: string[] = []; const statuses: (string | undefined)[] = [];
+  const editorTexts: string[] = [];
   const ctx: any = {
     cwd: f.project, hasUI, mode: hasUI ? "tui" : "print", isProjectTrusted: () => true,
     model: { provider: "test", id: "model", contextWindow: 200000 }, modelRegistry: { streamSimple() {} },
     waitForIdle: async () => {}, sessionManager: { getSessionId: () => "parent", getLeafId: () => null, getSessionDir: () => f.sessions },
-    ui: { notify(text: string) { notices.push(text); }, setStatus() {}, setEditorText() {},
+    ui: { notify(text: string) { notices.push(text); },
+      setStatus(key: string, text: string | undefined) { assert.equal(key, "project-refine"); statuses.push(text); },
+      setEditorText(text: string) { editorTexts.push(text); },
       editor: async (_title: string, text: string) => { output.push(text); return text; }, confirm: async () => consent,
       select: async () => "Accept" },
   };
   registerCommands({ on(name: string, fn: any) { events.set(name, fn); }, registerCommand(name: string, tool: any) { assert.equal(name, "project-refine"); command = tool; } } as any,
     { agentDir: f.agentDir, reviewer, output: (text) => output.push(text) });
-  return { events, ctx, output, notices, execute: (args: string) => command.handler(args, ctx) };
+  return { events, ctx, output, notices, statuses, editorTexts, execute: (args: string) => command.handler(args, ctx) };
 }
 
 test("the extension registers commands only, with no startup I/O/model/tool capability", () => {
@@ -69,6 +72,96 @@ test("command arguments are explicit and reject unknown or malformed options", (
   const parsed = parseCommand('propose --root "/some path" --since all --session-root /logs --historical-root /old --exclude-worktree /skip --rereview');
   assert.equal(parsed.root, "/some path"); assert.equal(parsed.since, 0); assert.equal(parsed.rereview, true);
   for (const input of ["apply x", "propose --yes", "propose --since yesterday", "propose --root", 'propose --root "missing']) assert.throws(() => parseCommand(input));
+});
+
+test("menu selection explains that the prepared command still needs submission", async () => {
+  const f = await fixture();
+  try {
+    let calls = 0;
+    const h = harness(f, async () => { calls++; return { text: '{"proposals":[]}' }; });
+    h.ctx.ui.select = async () => "Propose";
+    await h.execute("");
+    assert.equal(calls, 0);
+    assert.deepEqual(h.editorTexts, ["/project-refine propose"]);
+    assert.ok(h.notices.some((text) => text.includes("Submit it to run")));
+  } finally { await f.cleanup(); }
+});
+
+test("proposal progress starts before the idle wait and distinguishes preparation, consent, and analysis", async () => {
+  const f = await fixture();
+  try {
+    let resume!: () => void;
+    const idle = new Promise<void>((resolve) => { resume = resolve; });
+    let calls = 0;
+    const h = harness(f, async () => {
+      calls++;
+      assert.match(h.statuses.at(-1)!, /Analyzing/);
+      assert.ok(h.notices.some((text) => text.includes("analysis started")));
+      return { text: '{"proposals":[]}' };
+    });
+    h.ctx.waitForIdle = () => {
+      assert.match(h.statuses.at(-1)!, /Waiting for the current agent/);
+      return idle;
+    };
+    h.ctx.ui.editor = async (title: string, text: string) => {
+      if (title.startsWith("Provider disclosure preview")) {
+        assert.equal(calls, 0);
+        assert.match(title, /submit to continue/);
+        assert.match(h.statuses.at(-1)!, /Awaiting disclosure preview/);
+      }
+      return text;
+    };
+    h.ctx.ui.confirm = async () => {
+      assert.equal(calls, 0);
+      assert.match(h.statuses.at(-1)!, /Awaiting provider consent/);
+      return true;
+    };
+    const pending = h.execute(`propose --session-root "${f.sessions}"`);
+    assert.equal(calls, 0);
+    assert.match(h.statuses.at(-1)!, /Waiting/);
+    resume();
+    await pending;
+    assert.equal(calls, 1, h.notices.join("\n"));
+    for (const stage of ["Discovering", "Inventorying", "Scanning", "Preparing", "Saving"]) {
+      assert.ok(h.statuses.some((text) => text?.startsWith(stage)), `${stage} progress must be visible`);
+    }
+    assert.equal(h.statuses.at(-1), undefined);
+  } finally { await f.cleanup(); }
+});
+
+test("cancelling during the visible idle wait clears progress without starting analysis", async () => {
+  const f = await fixture();
+  try {
+    let calls = 0;
+    const h = harness(f, async () => { calls++; return { text: '{"proposals":[]}' }; });
+    h.ctx.waitForIdle = () => new Promise<void>(() => {});
+    const pending = h.execute("propose");
+    assert.match(h.statuses.at(-1)!, /Waiting for the current agent/);
+    await h.execute("cancel");
+    await pending;
+    assert.equal(calls, 0);
+    assert.equal(h.output.length, 0);
+    assert.equal(h.statuses.at(-1), undefined);
+  } finally { await f.cleanup(); }
+});
+
+test("cancelled preview and declined consent explicitly explain why analysis did not start", async () => {
+  const f = await fixture();
+  try {
+    let calls = 0;
+    const reviewer: ReviewerCall = async () => { calls++; return { text: '{"proposals":[]}' }; };
+    const cancelled = harness(f, reviewer);
+    cancelled.ctx.ui.editor = async () => undefined;
+    await cancelled.execute(`propose --session-root "${f.sessions}"`);
+    assert.ok(cancelled.notices.some((text) => /preview cancelled.*No model call made/.test(text)));
+    assert.equal(cancelled.statuses.at(-1), undefined);
+    const declined = harness(f, reviewer, true, false);
+    await declined.execute(`propose --session-root "${f.sessions}"`);
+    assert.ok(declined.notices.some((text) => /disclosure declined.*No model call made/.test(text)));
+    assert.equal(declined.statuses.at(-1), undefined);
+    assert.equal(calls, 0);
+    assert.ok(![...cancelled.notices, ...declined.notices].some((text) => text.includes("analysis started")));
+  } finally { await f.cleanup(); }
 });
 
 test("end-to-end proposal uses both worktrees, requires preview/consent, persists review only, and skips covered evidence", async () => {

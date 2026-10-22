@@ -194,6 +194,14 @@ export class ReviewError extends Error {
   }
 }
 
+/** Routing can inspect evidence or change providers after disclosure; never invoke it implicitly. */
+export function assertPhysicalReviewModel(model: NonNullable<ExtensionContext["model"]>): void {
+  // Pi 1.3's reserved virtual-model API; its detection helper is not publicly exported.
+  if (model.api === "pi-virtual") {
+    throw new Error("Project Refine requires a concrete model for provider-bound consent. Virtual/router models are not supported; select a concrete model with /model, then run /project-refine propose again. No model call made.");
+  }
+}
+
 /** Uses configured Pi providers/auth without creating an agent session or discovering any resources. */
 export function piReviewer(ctx: ExtensionContext, selected = ctx.model): ReviewerCall {
   const model = selected ? { ...selected } : undefined;
@@ -201,6 +209,7 @@ export function piReviewer(ctx: ExtensionContext, selected = ctx.model): Reviewe
   if (!model || typeof registry.streamSimple !== "function") {
     throw new Error("Project Refine requires Pi >=1.3.0 with an active model.");
   }
+  assertPhysicalReviewModel(model);
   return async (system, payload, signal) => {
     throwIfAborted(signal);
     const stream = registry.streamSimple(model, {

@@ -66,6 +66,15 @@ test("configured Pi reviewer uses zero tools and no ambient session creation", a
   assert.equal(result.usage?.totalTokens, 3);
 });
 
+test("Pi reviewer rejects virtual routing before any evidence can reach a router", () => {
+  let calls = 0;
+  const ctx: any = { model: { provider: "router", id: "auto", api: "pi-virtual" }, modelRegistry: {
+    streamSimple() { calls++; throw new Error("must not route"); },
+  } };
+  assert.throws(() => piReviewer(ctx), /concrete model.*provider-bound consent/);
+  assert.equal(calls, 0);
+});
+
 test("valid empty review succeeds, malformed output fails, and cancellation ignores late results", async () => {
   const f = fixture();
   const prepared = prepareReview(f.scope, f.manifest, f.collection, f.state, "test/model");

@@ -8,7 +8,7 @@ import { collectSessions } from "./core/sessions.ts";
 import { RefineStore, sanitizeRun } from "./core/storage.ts";
 import { redactText } from "./core/redact.ts";
 import {
-  abortable, executeReview, piReviewer, prepareReview, ReviewError,
+  abortable, assertPhysicalReviewModel, executeReview, piReviewer, prepareReview, ReviewError,
   SYSTEM_PROMPT, MAX_OUTPUT_TOKENS, MAX_REQUEST_BYTES, type ReviewerCall,
 } from "./core/reviewer.ts";
 import { disclosureReport, runReport, scopeReport } from "./core/report.ts";
@@ -108,7 +108,9 @@ export function registerCommands(pi: ExtensionAPI, dependencies: CommandDependen
       return;
     }
     // Put the next command in the editor, rather than recursively invoking handlers.
-    ctx.ui.setEditorText(`/project-refine ${choice.toLowerCase()}`);
+    const command = `/project-refine ${choice.toLowerCase()}`;
+    ctx.ui.setEditorText(command);
+    ctx.ui.notify(`${command} is ready in the input editor. Submit it to run.`, "info");
   }
 
   async function showHistory(ctx: ExtensionCommandContext, store: RefineStore, state: ProjectState): Promise<void> {
@@ -176,6 +178,8 @@ export function registerCommands(pi: ExtensionAPI, dependencies: CommandDependen
     if (!model || typeof ctx.modelRegistry.streamSimple !== "function") {
       throw new Error("Project Refine requires Pi >=1.3.0 and an active configured model.");
     }
+    // Reject routers before sizing or disclosure, even with an injected reviewer.
+    assertPhysicalReviewModel(model);
     const modelLabel = `${model.provider}/${model.id}`;
     // Capture the reviewer/provider before dialogs; ctx.model is a live getter.
     const reviewer = dependencies.reviewer ?? piReviewer(ctx, model);
@@ -183,6 +187,7 @@ export function registerCommands(pi: ExtensionAPI, dependencies: CommandDependen
     if (maxBytes < 8000) {
       throw new Error("Selected model has insufficient context for bounded refinement; choose a larger-context model.");
     }
+    ctx.ui.setStatus("project-refine", "Preparing bounded evidence for disclosure…");
     const prepared = prepareReview(scope, manifest, collection, state, modelLabel, { rereview: options.rereview, maxRequestBytes: maxBytes });
     if (!prepared.payload.episodes.length) {
       await display(ctx, "No model call made", `${scopeReport(scope, manifest, collection)}\n\nNo uncovered evidence fits the current budget/date range. Use --since all, --rereview, or narrow resource scope. Coverage has not advanced.`);
@@ -196,10 +201,15 @@ export function registerCommands(pi: ExtensionAPI, dependencies: CommandDependen
       disclosureReport(prepared, redactText(modelLabel).text),
       `# Reviewer system instructions\n${SYSTEM_PROMPT}`,
     ].join("\n\n");
-    const viewed = await ctx.ui.editor("Provider disclosure preview (edits ignored; Esc cancels)", preview);
-    if (viewed === undefined) return;
+    ctx.ui.setStatus("project-refine", "Awaiting disclosure preview submission; analysis has not started.");
+    const viewed = await ctx.ui.editor("Provider disclosure preview (submit to continue; edits ignored; Esc cancels)", preview);
+    if (viewed === undefined) {
+      if (job.isCurrent()) ctx.ui.notify("Disclosure preview cancelled. No model call made.", "info");
+      return;
+    }
     job.assertCurrent();
     const payloadDigest = digest(prepared.serialized);
+    ctx.ui.setStatus("project-refine", "Awaiting provider consent; analysis has not started.");
     const authorized = await ctx.ui.confirm("Send this redacted evidence to the configured provider?", [
       redactText(modelLabel).text,
       `${prepared.payload.episodes.length} episodes across selected project worktrees; ${prepared.omittedEpisodes} uncovered episodes omitted.`,
@@ -207,7 +217,10 @@ export function registerCommands(pi: ExtensionAPI, dependencies: CommandDependen
       `Payload digest: ${payloadDigest}`,
       `At most one 90-second call, ${MAX_OUTPUT_TOKENS} output tokens. Acceptance never applies files.`,
     ].join("\n"), { signal: job.signal });
-    if (!authorized) return;
+    if (!authorized) {
+      if (job.isCurrent()) ctx.ui.notify("Provider disclosure declined. No model call made.", "info");
+      return;
+    }
     job.assertCurrent();
 
     let run: RefineRun = {
@@ -232,7 +245,8 @@ export function registerCommands(pi: ExtensionAPI, dependencies: CommandDependen
       proposals: [],
       usage: [],
     };
-    ctx.ui.setStatus("project-refine", "Reviewing bounded project evidence… (/project-refine cancel)");
+    ctx.ui.setStatus("project-refine", "Analyzing bounded project evidence… (/project-refine cancel)");
+    ctx.ui.notify(`Project Refine analysis started: ${redactText(modelLabel).text}, ${prepared.payload.episodes.length} episodes. Up to 90 seconds; results appear in a report, not the chat stream.`, "info");
     try {
       const result = await executeReview(prepared, scope, reviewer, job.signal);
       job.assertCurrent();
@@ -270,6 +284,7 @@ export function registerCommands(pi: ExtensionAPI, dependencies: CommandDependen
     const publicationSignal = safeRun.status === "success"
       ? AbortSignal.any([job.signal, job.lifecycleSignal])
       : job.lifecycleSignal;
+    ctx.ui.setStatus("project-refine", "Saving private review report…");
     await abortable(store.saveRun(safeRun, runReport(safeRun), { signal: publicationSignal }), publicationSignal);
     if (!job.isCurrent()) return;
     await store.rememberRoots(allRoots);
@@ -317,11 +332,13 @@ export function registerCommands(pi: ExtensionAPI, dependencies: CommandDependen
             if (!isCurrent()) throw new Error("Session changed; refinement result discarded.");
           },
         };
+        ctx.ui.setStatus("project-refine", "Waiting for the current agent to finish… (/project-refine cancel)");
         await abortable(ctx.waitForIdle(), job.signal);
         job.assertCurrent();
 
         const agentDir = dependencies.agentDir ?? getAgentDir();
         const root = options.root ? resolve(ctx.cwd, options.root) : undefined;
+        ctx.ui.setStatus("project-refine", "Discovering project and worktrees…");
         let project = await discoverProject(ctx.cwd, { root, signal: job.signal });
         const store = new RefineStore(agentDir, project.id);
         // Reset must remain available when private JSON is corrupt.
@@ -358,7 +375,9 @@ export function registerCommands(pi: ExtensionAPI, dependencies: CommandDependen
         const allRoots = project.worktrees.map((tree) => tree.root);
         const scope = evidenceScope(project, options.excludedWorktrees, ctx.cwd);
         // Target verification uses the full project; exclusions affect evidence only.
+        ctx.ui.setStatus("project-refine", "Inventorying project resources… (/project-refine cancel)");
         const manifest = await inventoryResources(project, job.signal);
+        ctx.ui.setStatus("project-refine", "Scanning project sessions across worktrees… (/project-refine cancel)");
         const collection = await collectSessions(scope, {
           sessionRoots: sessionRoots(ctx, options, agentDir),
           since: options.since,

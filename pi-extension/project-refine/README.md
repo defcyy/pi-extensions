@@ -4,7 +4,7 @@ Manual, proposal-only reflection on a project's Pi sessions **across its Git wor
 
 **Nothing is applied.** Accepting a proposal records a review decision. This extension does not edit project files, resume/write source sessions, run project scripts, install packages, commit, or inject learned instructions into task conversations.
 
-Requires **Pi >=1.3.0 <2**, Git for repository scoping, and an active configured model for proposals. Core tests also run without a provider or paid model calls. The other extensions in this package remain covered by the regression suite after the Pi development dependency upgrade.
+Requires **Pi >=1.3.0 <2**, Git for repository scoping, and an active configured concrete (non-virtual) model for proposals. Core tests also run without a provider or paid model calls. The other extensions in this package remain covered by the regression suite after the Pi development dependency upgrade.
 
 ## Commands
 
@@ -35,9 +35,11 @@ Bare invocation offers actions by placing the selected command in the input edit
 
 ## Review and disclosure
 
-`propose` waits for the current agent to be idle, snapshots evidence, sanitizes it, and opens a disclosure preview. Inspect the worktree scope, resource/evidence omissions, exact payload and provider/model. Cancel if it includes sensitive material. Edits in the preview editor are ignored; use scope options to narrow collection instead. Closing/submitting a preview is not consent: a separate confirmation binds authorization to the payload digest and selected provider/model.
+`propose` waits for the current agent to be idle, snapshots evidence, sanitizes it, and opens a disclosure preview. Status text shows the idle wait, resource inventory, session scan, and disclosure stages. Inspect the worktree scope, resource/evidence omissions, exact payload and provider/model. **Submit the preview to continue; Esc cancels without a model call.** Edits in the preview editor are ignored; use scope options to narrow collection instead. Submitting a preview is not consent: a separate confirmation binds authorization to the payload digest and selected provider/model.
 
-The reviewer uses the active Pi model/provider configuration, **no tools**, no ambient resource discovery, and no silent model fallback. It has one 90-second call, at most six uncovered episodes, a 48 KiB total request-text cap (further reduced for small-context models), and at most three proposals. Output tokens are capped at 6,000. Provider-reported usage is saved when available. Redaction is pattern-based and incomplete; there is no guarantee that all secrets or injection attempts are detected.
+Analysis starts only after that confirmation. A notification announces the model call; it does **not** stream assistant text or thinking into the task conversation. Wait for the report (up to 90 seconds for the call), or use `/project-refine cancel`. Declining consent or cancelling the preview explicitly reports that no model call was made.
+
+The reviewer uses the active Pi model/provider configuration, **no tools**, no ambient resource discovery, and no silent model fallback. Virtual/router models are refused: their unknown limits can appear as zero, and routing may inspect evidence or change the destination after consent. Select a concrete provider/model with `/model` before proposing; audit/history do not require a concrete model. It has one 90-second call, at most six uncovered episodes, a 48 KiB total request-text cap (further reduced for small-context models), and at most three proposals. Output tokens are capped at 6,000. Provider-reported usage is saved when available. Redaction is pattern-based and incomplete; there is no guarantee that all secrets or injection attempts are detected.
 
 A report contains session-qualified evidence citations and exact excerpts, applicability/exceptions, minimal proposed diffs against disclosed hashes, and an explicit **“structural-only; behavior not evaluated”** label. Unknown citations/quotes, unsafe targets, ambiguous/overlapping edits, stale files, tool requests, truncated replies, and malformed output fail the run without advancing coverage.
 

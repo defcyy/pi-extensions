@@ -83,6 +83,23 @@ for (const switchAt of ["preview", "consent"] as const) {
   });
 }
 
+for (const contextWindow of [0, 200000]) {
+  test(`virtual models with contextWindow ${contextWindow} cannot route evidence past provider consent`, async (t) => {
+    const f = await commandFixture(t);
+    f.ctx.model = { ...f.model, api: "pi-virtual", contextWindow };
+    await f.propose();
+    assert.equal(f.calls.length, 0, "neither routing nor streaming may receive evidence");
+    assert.equal(f.output.length, 0, "must refuse before preview, not disclose a misleading destination");
+    assert.ok(f.notices.some((text) => /Virtual\/router models.*\/model.*No model call made/.test(text)));
+    assert.ok(!f.notices.some((text) => /insufficient context/.test(text)), "zero means unknown for virtual models");
+    assert.deepEqual(await f.store.listRuns(), []);
+    assert.deepEqual((await f.store.loadState()).covered, {});
+    await f.execute(`audit --root "${f.project}" --session-root "${f.sessions}"`);
+    assert.ok(f.output.some((text) => text.includes("AGENTS.md")), "local audit must still work with virtual selection");
+    assert.equal(f.calls.length, 0);
+  });
+}
+
 for (const cancel of ["user", "shutdown"] as const) {
   test(`${cancel} cancellation during a successful save's storage wait cannot publish coverage`, async (t) => {
     const f = await commandFixture(t);
