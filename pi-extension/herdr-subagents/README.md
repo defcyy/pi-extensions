@@ -5,7 +5,7 @@ This package includes:
 - [Herdr Subagents](#herdr-subagents) — asynchronous one-shot Pi workers in [Herdr](https://herdr.dev).
 - [Web Search](../web-search/README.md) — focused DuckDuckGo, GitHub, and URL-fetching tools for development research.
 - [GitHub Skills](../github-skills/README.md) — discover project `.github/skills` resources.
-- [Project Refine](../project-refine/README.md) — proposal-only retrospective over project sessions across worktrees (Pi >=1.3.0 <2).
+- [Project Refine](../project-refine/README.md) — one agent workflow to collect project guidance/session evidence, propose refinements in chat, then wait for review (Pi >=1.3.0 <2).
 
 ## Herdr Subagents
 

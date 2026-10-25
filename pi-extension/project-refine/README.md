@@ -1,80 +1,45 @@
 # Project Refine
 
-Manual, proposal-only reflection on a project's Pi sessions **across its Git worktrees**. It combines a local resource audit with cited historical requests, corrections, tool failures/recoveries, and useful verification workflows. Suggestions may improve `AGENTS.md`, skills, references, prompts, or setup documentation.
-
-**Nothing is applied.** Accepting a proposal records a review decision. This extension does not edit project files, resume/write source sessions, run project scripts, install packages, commit, or inject learned instructions into task conversations.
-
-Requires **Pi >=1.3.0 <2**, Git for repository scoping, and an active configured concrete (non-virtual) model for proposals. Core tests also run without a provider or paid model calls. The other extensions in this package remain covered by the regression suite after the Pi development dependency upgrade.
-
-## Commands
+One command, one normal agent workflow:
 
 ```text
-/project-refine                         # Menu/help
-/project-refine audit                   # Local inventory + session coverage, no model
-/project-refine propose --since 14d      # Preview, consent, then one bounded model call
-/project-refine propose --since all     # Broader history, still bounded per run
-/project-refine review [full-proposal-id]
-/project-refine history
-/project-refine cancel
-/project-refine reset                   # Confirm deletion of this project's private data
+/project-refine
 ```
 
-Scope options (quote paths containing spaces):
+The agent collects the project's agent guidance, skills, reusable prompts, agent configuration and relevant session evidence, then proposes setup refinements **in the conversation**. It reviews how agents are instructed to work on the project—not the application or extensions implemented by the project. It then asks you to review the proposals and waits. Reply with the changes you approve; the command itself does not apply anything.
+
+You can optionally give a focus:
 
 ```text
---root "/project"                       # Explicit root, required outside Git
---session-root "/custom/sessions"        # Repeatable; supplied roots replace default stores
---historical-root "/old/worktree"        # Explicit association with this repository
---exclude-worktree "/project/feature"    # Exclude evidence from this root
---rereview                              # Reconsider covered episodes/rejected suggestions
+/project-refine focus on skill routing and testing instructions
 ```
 
-Without `--session-root`, collection scans the resolved Pi agent directory's `sessions`, the current session directory, and `PI_CODING_AGENT_SESSION_DIR` when set. Explicitly add other custom stores; arbitrary stores cannot be inferred from history.
+## Scope
 
-Bare invocation offers actions by placing the selected command in the input editor; submit it to run. Audit/history/review reports work without a UI. **Noninteractive `propose` is deliberately refused**: no absent dialog or generic `--yes` can authorize provider disclosure. TUI and RPC clients must support preview and confirmation.
+Refinement targets are `AGENTS.md` or equivalent project guidance, skills and references, routing descriptions, reusable agent prompts, and project-local agent configuration. Examples include clarifying when an existing skill applies, fixing a broken guidance reference, consolidating conflicting instructions, or capturing a recurring project-specific procedure.
 
-## Review and disclosure
+Application/extension code, test-suite refactors and product documentation are **not** refinement targets. Source and manifests may be inspected only to verify a setup claim, command or path. An extension repository does not turn the command into an extension-maintenance review, including maintenance of Project Refine itself. Optional focus text narrows the setup review rather than changing this boundary. Missing `AGENTS.md` or skill files alone do not justify creating them.
 
-`propose` waits for the current agent to be idle, snapshots evidence, sanitizes it, and opens a disclosure preview. Status text shows the idle wait, resource inventory, session scan, and disclosure stages. Inspect the worktree scope, resource/evidence omissions, exact payload and provider/model. **Submit the preview to continue; Esc cancels without a model call.** Edits in the preview editor are ignored; use scope options to narrow collection instead. Submitting a preview is not consent: a separate confirmation binds authorization to the payload digest and selected provider/model.
+## What happens
 
-Analysis starts only after that confirmation. A notification announces the model call; it does **not** stream assistant text or thinking into the task conversation. Wait for the report (up to 90 seconds for the call), or use `/project-refine cancel`. Declining consent or cancelling the preview explicitly reports that no model call was made.
+1. Discover the project, related Git worktrees, agent guidance, skills, references, prompts and configuration. Distinguish discovered files from resources known to be loaded.
+2. Inspect current context and relevant project sessions incrementally, collecting more evidence when needed. Distinguish human feedback from generated worker assignments; ordinary implementation bugs are not automatically guidance defects.
+3. Summarize the current setup and present justified setup refinements with affected paths, evidence, proposed replacements/diffs, agent-workflow benefits and tradeoffs. If no in-scope change is warranted, explain the conclusion and coverage gaps instead of proposing implementation changes.
+4. Stop for your review. No files, source sessions or Git state should be changed during this review.
 
-The reviewer uses the active Pi model/provider configuration, **no tools**, no ambient resource discovery, and no silent model fallback. Virtual/router models are refused: their unknown limits can appear as zero, and routing may inspect evidence or change the destination after consent. Select a concrete provider/model with `/model` before proposing; audit/history do not require a concrete model. It has one 90-second call, at most six uncovered episodes, a 48 KiB total request-text cap (further reduced for small-context models), and at most three proposals. Output tokens are capped at 6,000. Provider-reported usage is saved when available. Redaction is pattern-based and incomplete; there is no guarantee that all secrets or injection attempts are detected.
+There are no subcommands, scope flags, disclosure dialogs, isolated JSON reviewer calls, report files, coverage ledgers, cached results or acceptance bookkeeping. Additional text is an optional natural-language focus, not a command or flag. Use Pi's normal stop control to interrupt the task, and ordinary conversation to review or approve proposals.
 
-A report contains session-qualified evidence citations and exact excerpts, applicability/exceptions, minimal proposed diffs against disclosed hashes, and an explicit **“structural-only; behavior not evaluated”** label. Unknown citations/quotes, unsafe targets, ambiguous/overlapping edits, stale files, tool requests, truncated replies, and malformed output fail the run without advancing coverage.
+## Runtime and data
 
-Review can accept, reject, or defer a proposal. **Accept does not apply it.** Use the private Markdown report/patch manually if desired; automatic application, undo and execution trials are not implemented.
+Requires **Pi >=1.3.0 <2**, a trusted project, an idle agent and a selected model. Uses the current session's model, tools and normal provider routing; it does not replace the model, tool selection, system prompt or session. Progress, tool activity and proposals appear through Pi's usual conversation UI, including in RPC clients. No custom UI is required.
 
-## Project and resource scope
+Invoking the command requests normal agent inspection: content read through tools enters this conversation and can be sent to its configured provider. There is no separate redaction service or disclosure confirmation. The workflow instructs the agent to extract only relevant project messages, omit hidden/thinking content and secrets, and not dump whole logs. Review sensitive data and your provider settings before invoking it.
 
-- Local repository identity is its canonical Git common directory. Main/linked/detached worktrees share evidence; separate clones and nested independent repositories/submodules do not, even with matching remotes.
-- Sessions started in nested worktree directories are included. Header `cwd`, not encoded directory names or creation-date filenames, establishes attribution. Recent activity in resumed old sessions is eligible.
-- Registered missing worktrees and previously verified paths can be attributed historically. Unknown pruned worktrees require `--historical-root`; a reused path with conflicting live repository identity is rejected. Complete recovery of unrecorded removed worktrees is impossible from cwd-only headers.
-- Edits target only the selected current checkout. Other worktrees supply evidence, not edit destinations. `--root` in Git must select a checkout of the same repository; monorepo subproject filtering is not implemented.
-- Named resources: root/nested `AGENTS.md`, `.pi/skills`, `.agents/skills`, `.github/skills`, skill Markdown references, `.pi/prompts`, `.pi/settings.json`, and common package manifests. Setup/configuration files are advisory-only. New `AGENTS.md` or a non-colliding new skill in an established skill directory can be proposed.
-- No global/ancestor/package-installed resources, executable extensions, dependencies/build directories, symlinks, or custom configured discovery paths are loaded. Ambiguous ownership and scanner limitations are shown. Audit never executes setup commands.
+The command supplies working-directory and session-store metadata, including the current session's entry cutoff. The agent performs discovery itself, can inspect configured local skill paths, and must report unavailable evidence and incomplete coverage. It is not a guarantee that every session or skill will be inspected. It should propose project-local changes; global/installed skills may inform the review but should not be edited without an explicit request.
 
-## History fidelity and coverage
+The read-only/review boundary is an instruction to the normal agent, **not an OS sandbox or a tool-level write blocker**. Existing session tools and permissions remain unchanged. Historical instructions are evidence, not authorization to execute commands or change files.
 
-The collector reads bounded immutable JSONL snapshots. It supports v1–v3 headers, legacy string/block content, conversation branches/multiple roots, ancestry-paired tool outcomes, current-session entry cutoffs, and verified related-fork prefixes. Thinking/images/system/hidden custom bodies are not submitted. Ordinary task conversations are retained when marked refinement intervals are excluded.
-
-Historical **raw evidence is not a model-visible context replay**. Compaction, `context_edit`, system deltas, unavailable old skill content and the final active leaf are explicitly marked unknown where not reconstructed. Tool output and excerpts can be truncated; nested-call bodies may be absent. A non-error read does not establish that a skill was followed. Assistant claims, later user messages, or an ordinary successful tool call do not prove overall task success.
-
-Collection and requests have explicit file/byte/node/branch/episode limits. Reports show retained counts and omissions, not a false claim that every session was analyzed. The first implementation performs **one combined review call per invocation**, not multi-batch synthesis. Repeat `propose` to continue over uncovered episodes across worktrees; `--since all` broadens the date window. The collector's 200-episode catalog limit is an explicit initial limitation for large backlogs; narrow date ranges when the catalog is saturated.
-
-Coverage is keyed by source episode, reviewer version, current resource manifest, selected checkout and model. Only submitted episodes from a validated successful response advance it; valid zero-proposal results count as analyzed. Re-review invalidates neither source history nor previous decisions. Rejected unchanged proposal fingerprints are suppressed unless `--rereview` is used; semantic paraphrases are not guaranteed to share a fingerprint.
-
-## Private state and safety boundaries
-
-State is under `<resolved-pi-agent-dir>/project-refine/<project-id>/`:
-
-- Redacted JSON run records and Markdown reports.
-- Compact coverage, verified/explicit historical worktree associations, and append-only review decisions.
-- No additional raw transcript copies or source-session sidecars.
-
-Directories/files use 0700/0600 permissions where supported, atomic publication, and cross-process locking. Unsafe IDs, corrupt data, symlinks, non-private files and hardlinks are rejected. Reports expire after 30 days on a subsequent state mutation; compact coverage/decisions persist until `reset`. Retention is not a background timer. Reset removes this project's private data only and causes future collection to reconsider history.
-
-This is not an OS sandbox. Pi extensions have user permissions; hostile concurrent filesystem writers cannot be fully controlled by path/hash checks. Secret scanners and schema checks cannot prove semantic safety or behavioral improvement. Remote providers may process authorized evidence according to their own policies.
+Old data under `<pi-agent-dir>/project-refine/` is no longer read or written. Existing reports are left untouched; there is no automatic migration or deletion of private data.
 
 ## Development
 
@@ -84,6 +49,4 @@ pnpm typecheck
 pi -e ./pi-extension/project-refine/index.ts
 ```
 
-The suite exercises real disposable Git worktrees and read-only synthetic session snapshots, injected no-tools review calls, cancellation and invalid responses, exact diffs, redaction, private storage/retention, cross-process concurrency, and no-project-write invariants. Model effectiveness and full task replay are not claimed by those tests.
-
-The reviewer version is part of coverage identity. Changes to payload preparation can therefore cause previously analyzed evidence to be reviewed again. Existing reports still expire normally; compact coverage and decisions remain until reset.
+Tests cover command registration, main-session dispatch, discovery metadata, trust/idle/model guards and essential scope/evidence/approval instructions. They do not validate real TUI/RPC behavior, refinement quality or model compliance with the review boundary.
