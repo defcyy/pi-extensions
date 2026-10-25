@@ -27,15 +27,15 @@ test("the extension exposes only the four focused web tools", () => {
   ]);
 });
 
-test("an already-aborted tool signal reaches the request", async () => {
+test("an already-aborted tool signal prevents a request", async () => {
   const tools = new Map<string, any>();
   webSearchExtension({
     registerTool(tool: any) { tools.set(tool.name, tool); },
   } as any);
   const originalFetch = globalThis.fetch;
-  let observedAborted = false;
+  let requested = false;
   globalThis.fetch = (async (_input: any, init?: RequestInit) => {
-    observedAborted = init?.signal?.aborted === true;
+    requested = true;
     throw init?.signal instanceof AbortSignal ? init.signal.reason : new Error("missing signal");
   }) as typeof fetch;
   const controller = new AbortController();
@@ -45,7 +45,7 @@ test("an already-aborted tool signal reaches the request", async () => {
       tools.get("web_search").execute("call", { query: "typescript" }, controller.signal),
       /cancelled/,
     );
-    assert.equal(observedAborted, true);
+    assert.equal(requested, false);
   } finally {
     globalThis.fetch = originalFetch;
   }

@@ -4,6 +4,7 @@ import { Type, type Static } from "typebox";
 import {
   appendSiteFilter,
   assertHttpUrl,
+  assertSupportedContentType,
   clipContent,
   createThrottle,
   githubHeaders,
@@ -12,9 +13,11 @@ import {
   isDuckDuckGoChallenge,
   normalizeFetchedContent,
   parseDuckDuckGoResults,
-  readResponseBody,
   type SearchResult,
 } from "./web.ts";
+
+import { requestText, fetchJson, githubItems } from "./http.ts";
+import { budgetResults, parseSerperResults, searchConfiguration, serperRequest } from "./search.ts";
 
 const Recency = StringEnum(["day", "week", "month", "year"] as const);
 const RepoSort = StringEnum(["best-match", "stars", "updated"] as const);
@@ -51,44 +54,6 @@ type GithubRepoSearchInput = Static<typeof GithubRepoSearchParams>;
 type GithubIssueSearchInput = Static<typeof GithubIssueSearchParams>;
 type FetchUrlInput = Static<typeof FetchUrlParams>;
 
-interface TextResponse {
-  response: Response;
-  text: string;
-  truncated: boolean;
-}
-
-async function requestText(
-  url: string,
-  init: RequestInit = {},
-  parentSignal?: AbortSignal,
-  failureLabel?: string,
-): Promise<TextResponse> {
-  const timeoutSignal = AbortSignal.timeout(20_000);
-  const signal = parentSignal ? AbortSignal.any([parentSignal, timeoutSignal]) : timeoutSignal;
-  const response = await fetch(url, { ...init, signal, redirect: "follow" });
-  if (failureLabel && !response.ok) {
-    await response.body?.cancel().catch(() => {});
-    throw new Error(`${failureLabel} failed with HTTP ${response.status} ${response.statusText}.`);
-  }
-  const body = await readResponseBody(response, signal);
-  return { response, ...body };
-}
-
-async function fetchJson(url: string, init: RequestInit, signal?: AbortSignal): Promise<any> {
-  const { response, text } = await requestText(url, init, signal);
-  let payload: any;
-  try {
-    payload = JSON.parse(text);
-  } catch {
-    throw new Error(`The search provider returned invalid JSON (HTTP ${response.status}).`);
-  }
-  if (!response.ok) {
-    const message = typeof payload?.message === "string" ? `: ${payload.message}` : "";
-    throw new Error(`The search provider returned HTTP ${response.status}${message}`);
-  }
-  return payload;
-}
-
 function formatResults(results: SearchResult[]): string {
   return results.length === 0
     ? "No results found."
@@ -105,43 +70,59 @@ function normalizeRepo(value: string): string {
 const DUCKDUCKGO_MIN_INTERVAL_MS = 1_500;
 
 const DUCKDUCKGO_CHALLENGE_MESSAGE =
-  "DuckDuckGo rate-limited this IP with a bot challenge (HTTP 202); retrying now will not help and the block usually lasts several minutes. " +
+  "DuckDuckGo rate-limited this IP with a bot challenge; retrying now will not help and the block usually lasts several minutes. " +
   "Stop issuing web_search calls for now. Use github_issue_search / github_repo_search for GitHub content, or fetch_url on a known documentation URL.";
 
 export default function webSearch(pi: ExtensionAPI) {
   const throttleDuckDuckGo = createThrottle(DUCKDUCKGO_MIN_INTERVAL_MS);
+  let challengedUntil = 0;
 
   pi.registerTool({
     name: "web_search",
     label: "Web Search",
-    description: "Search the web through DuckDuckGo's HTML results. Use site to restrict to official documentation or another domain (do not also write site: in the query). Searches run one at a time, so avoid firing many in parallel. For GitHub issues, PRs, or repositories prefer github_issue_search / github_repo_search. No API key is required.",
+    description: "Search the web using the configured provider (DuckDuckGo by default, optionally Serper). Use site to restrict to a domain; do not also write site: in query. DuckDuckGo searches run one at a time. For GitHub issues, PRs, or repositories prefer github_issue_search / github_repo_search.",
     parameters: WebSearchParams,
     async execute(_toolCallId, params: WebSearchInput, signal) {
       const query = appendSiteFilter(params.query, params.site);
       if (!query.trim()) throw new Error("query cannot be blank.");
-      const { response, text } = await throttleDuckDuckGo(
-        () => requestText(
-          duckDuckGoSearchUrl({ query, recency: params.recency }),
-          { headers: { Accept: "text/html" } },
-          signal,
-          "DuckDuckGo search",
-        ),
-        signal,
-      );
-      if (isDuckDuckGoChallenge(response.status, text)) {
-        throw new Error(DUCKDUCKGO_CHALLENGE_MESSAGE);
+      const { provider, apiKey } = searchConfiguration();
+      let results: SearchResult[];
+      let text = "";
+      if (provider === "serper") {
+        const payload = await fetchJson("https://google.serper.dev/search", {
+          method: "POST",
+          headers: { "X-API-KEY": apiKey!, "Content-Type": "application/json" },
+          body: JSON.stringify(serperRequest(query, params.numResults ?? 5, params.recency)),
+        }, signal, "Serper search");
+        results = parseSerperResults(payload).slice(0, params.numResults ?? 5);
+      } else {
+        results = await throttleDuckDuckGo(async () => {
+          if (Date.now() < challengedUntil) {
+            throw new Error(`${DUCKDUCKGO_CHALLENGE_MESSAGE} Cooldown: ${Math.ceil((challengedUntil - Date.now()) / 1000)} seconds remaining.`);
+          }
+          const fetched = await requestText(
+            duckDuckGoSearchUrl({ query, recency: params.recency }),
+            { headers: { Accept: "text/html" } }, signal, "DuckDuckGo search",
+          );
+          text = fetched.text;
+          if (isDuckDuckGoChallenge(fetched.response.status, text)) {
+            challengedUntil = Date.now() + 5 * 60_000;
+            throw new Error(DUCKDUCKGO_CHALLENGE_MESSAGE);
+          }
+          return parseDuckDuckGoResults(text).slice(0, params.numResults ?? 5);
+        }, signal);
       }
-      const results = parseDuckDuckGoResults(text).slice(0, params.numResults ?? 5);
       if (results.length === 0) {
-        if (!/class="[^"]*\bno-results\b/i.test(text)) {
+        if (provider === "duckduckgo" && !/class=["'][^"']*\bno-results\b/i.test(text)) {
           throw new Error("DuckDuckGo returned a page without recognizable result markup; its HTML format may have changed.");
         }
         return {
           content: [{ type: "text", text: "No results found. Try fewer or broader terms, or drop site/recency." }],
-          details: { query, results },
+          details: { query, provider, results, truncated: false },
         };
       }
-      return { content: [{ type: "text", text: formatResults(results) }], details: { query, results } };
+      const output = budgetResults(results, (result, index) => formatResults([result]).replace(/^1\./, `${index + 1}.`));
+      return { content: [{ type: "text", text: output.text }], details: { query, provider, results: output.results, truncated: output.truncated } };
     },
   });
 
@@ -155,8 +136,8 @@ export default function webSearch(pi: ExtensionAPI) {
       if (!query.trim()) throw new Error("query cannot be blank.");
       const url = new URL(githubSearchUrl("repositories", query, params.numResults ?? 5));
       if (params.sort && params.sort !== "best-match") url.searchParams.set("sort", params.sort);
-      const payload = await fetchJson(url.toString(), { headers: githubHeaders() }, signal);
-      const results = Array.isArray(payload.items) ? payload.items.map((item: any) => ({
+      const payload = await fetchJson(url.toString(), { headers: githubHeaders() }, signal, "GitHub search");
+      const results = githubItems(payload, "repositories").slice(0, params.numResults ?? 5).map((item: any) => ({
         fullName: item.full_name,
         description: item.description ?? "",
         url: item.html_url,
@@ -164,11 +145,10 @@ export default function webSearch(pi: ExtensionAPI) {
         language: item.language ?? undefined,
         updatedAt: item.updated_at ?? undefined,
         homepage: item.homepage || undefined,
-      })) : [];
-      const text = results.length === 0 ? "No repositories found." : results.map((result: any, index: number) =>
-        `${index + 1}. ${result.fullName} · ★ ${result.stars}${result.language ? ` · ${result.language}` : ""}\n${result.url}\n${result.description}`,
-      ).join("\n\n");
-      return { content: [{ type: "text", text }], details: { query, results } };
+      }));
+      const output = budgetResults(results, (result, index) =>
+        `${index + 1}. ${result.fullName} · ★ ${result.stars}${result.language ? ` · ${result.language}` : ""}\n${result.url}\n${result.description}`);
+      return { content: [{ type: "text", text: output.text || "No repositories found." }], details: { query, results: output.results, truncated: output.truncated } };
     },
   });
 
@@ -187,8 +167,8 @@ export default function webSearch(pi: ExtensionAPI) {
       if (!query.trim()) throw new Error("query cannot be blank.");
       const url = new URL(githubSearchUrl("issues", query, params.numResults ?? 5));
       if (params.sort && params.sort !== "best-match") url.searchParams.set("sort", params.sort);
-      const payload = await fetchJson(url.toString(), { headers: githubHeaders() }, signal);
-      const results = Array.isArray(payload.items) ? payload.items.map((item: any) => ({
+      const payload = await fetchJson(url.toString(), { headers: githubHeaders() }, signal, "GitHub search");
+      const results = githubItems(payload, "issues").slice(0, params.numResults ?? 5).map((item: any) => ({
         title: item.title,
         url: item.html_url,
         repository: item.repository_url?.replace("https://api.github.com/repos/", "") ?? "",
@@ -197,11 +177,10 @@ export default function webSearch(pi: ExtensionAPI) {
         kind: item.pull_request ? "pull request" : "issue",
         comments: item.comments ?? 0,
         updatedAt: item.updated_at,
-      })) : [];
-      const text = results.length === 0 ? "No issues or pull requests found." : results.map((result: any, index: number) =>
-        `${index + 1}. ${result.repository}#${result.number} · ${result.kind} · ${result.state} · ${result.comments} comments\n${result.title}\n${result.url}`,
-      ).join("\n\n");
-      return { content: [{ type: "text", text }], details: { query, results } };
+      }));
+      const output = budgetResults(results, (result, index) =>
+        `${index + 1}. ${result.repository}#${result.number} · ${result.kind} · ${result.state} · ${result.comments} comments\n${result.title}\n${result.url}`);
+      return { content: [{ type: "text", text: output.text || "No issues or pull requests found." }], details: { query, results: output.results, truncated: output.truncated } };
     },
   });
 
@@ -214,9 +193,10 @@ export default function webSearch(pi: ExtensionAPI) {
       const requestedUrl = assertHttpUrl(params.url).toString();
       const { response, text, truncated: bodyTruncated } = await requestText(
         requestedUrl,
-        { headers: { Accept: "text/html, text/plain, application/json, */*;q=0.1" } },
+        { headers: { Accept: "text/html, text/plain, application/json, */*;q=0.1" }, redirect: "follow" },
         signal,
         "Fetch",
+        assertSupportedContentType,
       );
       const finalUrl = assertHttpUrl(response.url).toString();
       const contentType = response.headers.get("content-type");
